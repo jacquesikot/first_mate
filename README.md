@@ -12,13 +12,8 @@ first_mate/
 ├── STATUS.md                   living project status / hand-off log — agents read first, update last
 ├── daemon/                     the fm daemon (Python) — orchestrator, API, CLI; see daemon/README.md
 └── prototype/
-    ├── dashboard.html          clickable UI prototype (open in a browser)
-    └── screenshots/
-        ├── 01-task-board.png
-        ├── 02-task-detail.png
-        ├── 03-inbox.png
-        ├── 04-memory.png
-        └── 05-new-task.png
+    ├── First Mate System Prototype.html   clickable UI prototype (open in a browser)
+    └── support.js                         runtime the prototype HTML loads
 ```
 
 ## PRD.md
@@ -27,9 +22,9 @@ The full specification: vision, jobs to be done, architecture, per-subsystem req
 
 **Status:** agreed. Phase 0 (the context-relay spike) is the recommended starting point and the go/no-go for the whole design.
 
-## prototype/dashboard.html
+## prototype/First Mate System Prototype.html
 
-A working, clickable prototype of the web dashboard — no build step, no dependencies. Open it directly in a browser.
+A working, clickable prototype of the web dashboard — no build step; open it directly in a browser (it loads `support.js` from the same directory).
 
 It runs on mock data and demonstrates the intended interaction model:
 
@@ -41,7 +36,7 @@ It runs on mock data and demonstrates the intended interaction model:
 
 Try: open a task from the board, move through its tabs, then answer the scope-change question in the inbox and watch the blocked task return to running.
 
-**Status:** base version, under iteration. Design decisions established so far:
+**Status:** improved UI/UX iteration (2026-08-19, supersedes the original `dashboard.html`, which remains in git history). This file is the design reference for Phase 3. Design decisions established so far:
 
 - Near-monochrome dark surface with a single amber accent, reserved for attention only — the needs-you counter, blocking questions, active selection, and the live session.
 - Monospace for anything the system measured (IDs, percentages, paths, timings); sans for anything a human wrote (goals, questions, contracts, handoff briefs). The typographic split carries the distinction without labels.

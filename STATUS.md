@@ -3,7 +3,7 @@
 > Living hand-off log. Every session reads this first and updates it before ending.
 > Protocol: see `CLAUDE.md`. Spec: see `PRD.md`.
 
-**Current phase:** Phase 2 — scoping + scope guard: **COMPLETE** (2026-08-19; 86 unit tests pass; phase-2 smoke — guard block → scope_change park → allow → resume → done — passed first try with real workers). Next: Phase 3 — web dashboard.
+**Current phase:** Phase 2 — scoping + scope guard: **CLOSED** (2026-08-19, closure confirmed by Jacques; 86 unit tests pass; phase-2 smoke — guard block → scope_change park → allow → resume → done — passed first try with real workers). Next: Phase 3 — web dashboard.
 
 ---
 
@@ -11,15 +11,14 @@
 
 **Phase 3 — web dashboard** (PRD §6.8, §8):
 
-1. **⚠️ Check the prototype directory first.** On 2026-08-19 the working tree showed `prototype/dashboard.html` + screenshots deleted and replaced by an exported "First Mate System Prototype.html" + `support.js` (looks like a design-tool/browser export Jacques dropped in). Not committed. The original design reference is recoverable with `git checkout -- prototype/` — ask Jacques which artifact is the Phase 3 reference before building.
+1. **Design reference:** `prototype/First Mate System Prototype.html` (+ `support.js`) — Jacques's improved UI/UX iteration, committed 2026-08-19, superseding the original `dashboard.html` (still in git history). Read it (and README's design-decision list) before building.
 2. SPA (TypeScript/React per PRD §7), thin client over the existing daemon API: task board, task detail (contract render, step timeline with generations/handoffs, validation evidence, live output streaming, diff viewer), inbox, memory view. The daemon already has REST + `/ws` broadcast of every event; live pane output streaming needs a small daemon addition (tmux capture loop → WS) — keep it inside `exec/tmux.py`'s boundary.
 3. Serve the built SPA from the daemon (`fm serve --open`).
-4. **One human verification still owed for Phase 2:** `fm task "<goal>"` scoping conversation needs a live interactive run by Jacques (machinery is unit-tested; the contract gate is identical to POST /tasks, but nobody has sat through the chat yet).
-5. Nice-to-haves carried forward: `block-with-timeout` ask mode (park-only today), question batching at step boundaries (PRD §6.5), `--max-budget-usd` per worker (flag verified to exist).
+4. Nice-to-haves carried forward: a first live interactive run of `fm task "<goal>"` by Jacques (machinery unit-tested + gate identical to POST /tasks, but no human has sat through the chat yet), `block-with-timeout` ask mode (park-only today), question batching at step boundaries (PRD §6.5), `--max-budget-usd` per worker (flag verified to exist).
 
 ## In progress
 
-- Nothing half-finished. Phase 2 closed clean (modulo the live scoping run noted above).
+- Nothing half-finished. Phase 2 closed clean.
 
 ## Done
 
@@ -74,6 +73,7 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 
 One dated entry per working session: who/what/outcome, newest first.
 
+- **2026-08-19** — Session 4 addendum (Claude + Jacques): Jacques confirmed the prototype replacement was his intentional UI/UX improvement and committed it (`prototype/First Mate System Prototype.html` + `support.js` supersede `dashboard.html`); README/CLAUDE.md references updated. **Phase 2 formally closed by Jacques.** Live scoping-chat run moved to the carried nice-to-have list.
 - **2026-08-19** — Session 4 (Claude): built Phase 2 end to end — `guard.py` scope-guard engine + `fm _guard` PreToolUse hook (wired via `workerfiles`, config compiled per generation), tripwires (manifests/migrations/push in the hook; diff thresholds in the orchestrator at step boundaries), mechanical scope-widening on "allow" answers, `scoping.py` + `fm task "<goal>"` interactive scoping with `fm contract check` self-validation, contract fields `tripwires`/`tripwire_allow` + validation. 86 tests pass (42 new). Live-verified the hook wiring with a real headless session (blocked in-band, event logged; also caught+fixed a temp-prefix bypass the unit tests missed). Phase-2 smoke (`fm-smoke --scenario phase2`) passed first try: block → park → allow → widened scope → resume → done. NOT committed: unexplained working-tree changes under `prototype/` (dashboard.html deleted, an exported HTML added) — left for Jacques to confirm. Next: Phase 3 dashboard; Jacques should also run one live `fm task "<goal>"` scoping chat.
 - **2026-08-19** — Session 3 (Claude): built Phase 1 orchestrator core end to end — models/store (files + rebuildable SQLite index), shell validation with evidence, worker hook files (`fm _event` → daemon), orchestrator loop (relay, park mode, failure ladder, reconciliation), FastAPI daemon (REST + WS + worker-slot cap), full `fm` CLI, 33 new unit tests (44 total, all passing), `fm-smoke` e2e. Smoke passed twice with real sonnet workers (second run clean after pinning cwd=worktree in the worker prompt); park→answer→resume and the failure ladder both exercised for real. Phase 1 exit criteria met. Next session: Phase 2 item 1 (scoping skill) or item 2 (scope-guard hook) — they're independent.
 - **2026-08-19** — Session 2 (Claude): verified Claude Code facts against live CLI/docs; scaffolded `daemon/` (four exec modules, spawner, 11 tests); built and **passed the Phase 0 relay spike** — 12/12 correct across 7 generations, exit criterion met, design is GO. Artifacts under `~/.firstmate/spike/run-20260819-130152/`.

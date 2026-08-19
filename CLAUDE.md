@@ -21,7 +21,7 @@ This repo is being built across **multiple independent Claude sessions**. This f
 - `PRD.md` — full spec: vision, architecture, per-subsystem requirements (§6), tech direction (§7), delivery phases (§8), acceptance criteria (§9). Read §7 and §8 before writing any code.
 - `STATUS.md` — living project state and hand-off log. Read first, update last.
 - `README.md` — repo overview and prototype guide.
-- `prototype/dashboard.html` — clickable UI prototype (mock data). It is the design reference for Phase 3; its visual decisions (documented in README) are agreed.
+- `prototype/First Mate System Prototype.html` — clickable UI prototype (mock data; loads `support.js`). It is the design reference for Phase 3; its visual decisions (documented in README) are agreed.
 
 ## Settled constraints — do not re-litigate (PRD §7)
 
