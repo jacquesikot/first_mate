@@ -9,7 +9,7 @@
 
 ## Next up (start here)
 
-1. **Scaffold the project layout** (suggested: `daemon/` Python package, `dashboard/` later in Phase 3, `skills/` for the scoping skill in Phase 2). Add a `.gitignore` when code starts.
+1. **Scaffold the project layout** (suggested: `daemon/` Python package, `dashboard/` later in Phase 3, `skills/` for the scoping skill in Phase 2). LICENSE (MIT) and `.gitignore` already exist.
 2. **Phase 0 — relay spike** (PRD §8, this is the go/no-go for the whole design):
    - Headless spawner: spawn `claude -p` + a skill in a git worktree, capture session ID and structured JSON output.
    - Forced context-wall relay: pre-compaction hook blocks auto-compaction and signals the orchestrator; handoff brief written; session killed; generation N+1 spawned with contract + handoff injected via session-start hook.
