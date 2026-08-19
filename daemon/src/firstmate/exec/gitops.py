@@ -1,0 +1,95 @@
+"""Git operations — the only module that shells out to git.
+
+Worktree lifecycle at `<repo-parent>/<repo>-worktrees/<branch>` (PRD §7),
+plus the read-side queries the orchestrator and dashboard need
+(changed files, diffs, diff stats).
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+
+class GitError(RuntimeError):
+    pass
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True
+    )
+    if check and proc.returncode != 0:
+        raise GitError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
+    return proc
+
+
+def worktrees_root(repo: Path) -> Path:
+    repo = repo.resolve()
+    return repo.parent / f"{repo.name}-worktrees"
+
+
+def worktree_path(repo: Path, branch: str) -> Path:
+    # Branch names may contain '/'; flatten for the directory name.
+    return worktrees_root(repo) / branch.replace("/", "-")
+
+
+def create_worktree(repo: Path, branch: str, base: str = "HEAD") -> Path:
+    """Create (or reuse) a worktree for `branch`, branching off `base`."""
+    path = worktree_path(repo, branch)
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    branch_exists = (
+        _git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False).returncode
+        == 0
+    )
+    if branch_exists:
+        _git(repo, "worktree", "add", str(path), branch)
+    else:
+        _git(repo, "worktree", "add", "-b", branch, str(path), base)
+    return path
+
+
+def remove_worktree(repo: Path, branch: str, force: bool = False) -> None:
+    path = worktree_path(repo, branch)
+    if not path.exists():
+        return
+    args = ["worktree", "remove", str(path)]
+    if force:
+        args.append("--force")
+    _git(repo, *args)
+
+
+def list_worktrees(repo: Path) -> list[Path]:
+    out = _git(repo, "worktree", "list", "--porcelain").stdout
+    return [
+        Path(line.removeprefix("worktree "))
+        for line in out.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def changed_files(worktree: Path) -> list[str]:
+    """Files changed vs. the worktree's base (staged, unstaged, untracked)."""
+    out = _git(worktree, "status", "--porcelain").stdout
+    return [line[3:] for line in out.splitlines() if line]
+
+
+def diff(worktree: Path) -> str:
+    return _git(worktree, "diff", "HEAD").stdout
+
+
+def diff_stat(worktree: Path) -> str:
+    return _git(worktree, "diff", "HEAD", "--stat").stdout
+
+
+def head_commit(repo: Path) -> str:
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def init_repo(path: Path) -> None:
+    """Create a fresh repo with an initial commit (used by tests/spikes)."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    _git(path, "commit", "--allow-empty", "-q", "-m", "init")

@@ -1,0 +1,3 @@
+"""First Mate — local autonomous coding-workflow orchestrator daemon."""
+
+__version__ = "0.0.1"
