@@ -107,18 +107,36 @@ class Store:
 
     # -------------------------------------------------------------- tasks
 
-    def create_task(self, contract: Contract) -> Task:
+    def create_task(self, contract: Contract, status: str = "ready",
+                    scoping_chat_id: str | None = None) -> Task:
         task_id = f"{slugify(contract.goal)}-{uuid.uuid4().hex[:4]}"
         task = Task(
             id=task_id,
             repo=contract.repo,
             branch=f"fm/{task_id}",
+            status=status,
             goal=contract.goal,
+            scoping_chat_id=scoping_chat_id,
             steps=[StepState(id=s.id) for s in contract.steps],
         )
         self.save_contract(task_id, contract)
         self.save_task(task)
-        self.append_event(task_id, "task_created")
+        self.append_event(task_id, "task_created", data={"status": status})
+        return task
+
+    def adopt_contract(self, task: Task, contract: Contract) -> Task:
+        """Replace a scoping task's placeholder contract with the real one
+        (scoping approval). Step states are created fresh — a task in
+        `scoping` has never run anything."""
+        contract.repo = str(Path(contract.repo).expanduser().resolve())
+        task.repo = contract.repo
+        task.goal = contract.goal
+        task.steps = [StepState(id=s.id) for s in contract.steps]
+        task.current_step = None
+        task.status = "ready"
+        task.scoping_chat_id = None
+        self.save_contract(task.id, contract)
+        self.save_task(task)
         return task
 
     def save_task(self, task: Task) -> None:

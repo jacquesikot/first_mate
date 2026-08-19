@@ -71,6 +71,8 @@ export interface Task {
   worktree: string;
   goal: string;
   current_step: string | null;
+  /** Set while status === "scoping" — the conversation producing the contract. */
+  scoping_chat_id: string | null;
   created_at: string;
   updated_at: string;
   steps: StepState[];
@@ -142,6 +144,8 @@ export interface FmEvent {
 
 export interface TaskDetail {
   task: Task;
+  /** Present while the task is being scoped; the conversation renders inline. */
+  scoping: ScopingChat | null;
   contract: Contract | null;
   contract_md: string | null;
   questions: Question[];
@@ -286,7 +290,7 @@ export const api = {
   browse: (path?: string) =>
     req<BrowseInfo>("GET", `/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   scopeStart: (goal: string, repo: string) =>
-    req<{ chat: ScopingChat }>("POST", "/scoping", { goal, repo }),
+    req<{ chat: ScopingChat; task: Task }>("POST", "/scoping", { goal, repo }),
   scopeGet: (id: string) => req<{ chat: ScopingChat }>("GET", `/scoping/${id}`),
   scopeMessage: (id: string, text: string) =>
     req<{ chat: ScopingChat }>("POST", `/scoping/${id}/message`, { text }),

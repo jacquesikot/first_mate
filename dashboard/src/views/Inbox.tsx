@@ -10,20 +10,13 @@ export function InboxView() {
   const goal = (id: string) => tasks.find((t) => t.id === id)?.goal;
 
   return (
-    <div
-      style={{
-        padding: "22px 22px 60px",
-        maxWidth: 1020,
-        display: "flex",
-        flexDirection: "column",
-        gap: 14,
-      }}
-    >
+    <div className="page" style={{ maxWidth: 1020, gap: 14 }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 14,
+          flexWrap: "wrap",
           padding: "12px 15px",
           borderRadius: "var(--rad)",
           border: "1px solid var(--bd)",
@@ -33,7 +26,10 @@ export function InboxView() {
         <span className="mono" style={{ fontSize: 11.5, color: "var(--tx2)" }}>
           {open.length} open · {blocking.length} blocking · {rest.length} batched
         </span>
-        <span className="mono" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--tx4)" }}>
+        <span
+          className="mono"
+          style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--tx4)", textAlign: "right" }}
+        >
           non-blocking questions batch at step boundaries · blocking pages immediately
         </span>
       </div>

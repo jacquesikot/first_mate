@@ -10,14 +10,16 @@ import {
   StateChip,
 } from "../components";
 import { ago, splitPath, statusColor, tokens } from "../format";
+import { Markdown } from "../markdown";
+import { ScopingPanel } from "./Scoping";
 
-type Tab = "steps" | "contract" | "changes" | "output" | "questions";
+type Tab = "scoping" | "steps" | "contract" | "changes" | "output" | "questions";
 
 export function TaskDetailView({ taskId }: { taskId: string }) {
   const { live, toast, refresh, go } = useApp();
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("steps");
+  const [tab, setTab] = useState<Tab | null>(null);
   const timer = useRef<number | null>(null);
 
   const load = useCallback(() => {
@@ -55,7 +57,9 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
     );
   if (!detail) return <div style={{ padding: 22 }} className="dim">loading…</div>;
 
-  const { task, contract, questions, attach } = detail;
+  const { task, contract, questions, attach, scoping } = detail;
+  // While the task is being scoped, the conversation IS the task view.
+  const scopingNow = task.status === "scoping" && scoping != null;
   // A live payload is only meaningful while the task actually has a live
   // session — otherwise it's a leftover from the previous generation.
   const isLive = task.status === "running" || task.status === "validating";
@@ -81,13 +85,18 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
     }
   };
 
-  const tabs: [Tab, string, string][] = [
-    ["steps", "Steps", String(task.steps.length)],
-    ["contract", "Contract", contract ? String(contract.criteria.length) : ""],
-    ["changes", "Changes", ""],
-    ["output", "Output", lv ? "live" : ""],
-    ["questions", "Questions", String(questions.length)],
-  ];
+  const tabs: [Tab, string, string][] = scopingNow
+    ? [["scoping", "Scoping", String(scoping!.messages.length)]]
+    : [
+        ["steps", "Steps", String(task.steps.length)],
+        ["contract", "Contract", contract?.criteria.length ? String(contract.criteria.length) : ""],
+        ["changes", "Changes", ""],
+        ["output", "Output", lv ? "live" : ""],
+        ["questions", "Questions", String(questions.length)],
+      ];
+  // Default tab follows the phase: scoping first while scoping, steps after.
+  const active: Tab =
+    tab && tabs.some(([k]) => k === tab) ? tab : scopingNow ? "scoping" : "steps";
 
   return (
     <div style={{ paddingBottom: 60 }}>
@@ -108,18 +117,21 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
         <span className="mono dimmer" style={{ fontSize: 11 }}>
           /
         </span>
-        <span style={{ fontSize: 14, fontWeight: 500 }}>{task.goal}</span>
+        <span className="truncate" style={{ fontSize: 14, fontWeight: 500, flex: "1 1 200px" }}>
+          {task.goal}
+        </span>
         <StateChip status={task.status} />
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          {task.status === "running" || detail.running ? (
-            <button className="btn" onClick={() => act("pause")}>
-              Pause
-            </button>
-          ) : (
-            <button className="btn" disabled={!canRun} onClick={() => act("run")}>
-              Run
-            </button>
-          )}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {!scopingNow &&
+            (task.status === "running" || detail.running ? (
+              <button className="btn" onClick={() => act("pause")}>
+                Pause
+              </button>
+            ) : (
+              <button className="btn" disabled={!canRun} onClick={() => act("run")}>
+                Run
+              </button>
+            ))}
           <button className="btn danger" onClick={() => act("abandon")}>
             Abandon
           </button>
@@ -137,24 +149,35 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
         }}
       >
         <div style={{ flex: "999 1 430px", minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
-          <div className="tabs">
-            {tabs.map(([key, label, count]) => (
-              <button
-                key={key}
-                className={`tab${tab === key ? " on" : ""}`}
-                onClick={() => setTab(key)}
-              >
-                <span>{label}</span>
-                {count && <span className="count">{count}</span>}
-              </button>
-            ))}
-          </div>
+          {tabs.length > 1 && (
+            <div className="tabs scroll-x">
+              {tabs.map(([key, label, count]) => (
+                <button
+                  key={key}
+                  className={`tab${active === key ? " on" : ""}`}
+                  onClick={() => setTab(key)}
+                >
+                  <span>{label}</span>
+                  {count && <span className="count">{count}</span>}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {tab === "steps" && <StepsTab detail={detail} />}
-          {tab === "contract" && <ContractTab detail={detail} onSaved={load} />}
-          {tab === "changes" && <ChangesTab taskId={taskId} />}
-          {tab === "output" && <OutputTab detail={detail} lv={lv} />}
-          {tab === "questions" && (
+          {active === "scoping" && (
+            <ScopingPanel
+              chat={scoping!}
+              onApproved={() => {
+                setTab("steps");
+                load();
+              }}
+            />
+          )}
+          {active === "steps" && <StepsTab detail={detail} />}
+          {active === "contract" && <ContractTab detail={detail} onSaved={load} />}
+          {active === "changes" && <ChangesTab taskId={taskId} />}
+          {active === "output" && <OutputTab detail={detail} lv={lv} />}
+          {active === "questions" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {[...questions].reverse().map((q) => (
                 <QuestionCard key={q.id} q={q} taskGoal={task.goal} />
@@ -344,12 +367,11 @@ function StepsTab({ detail }: { detail: TaskDetail }) {
                             padding: "0 13px 12px",
                             fontSize: 12.5,
                             color: "var(--tx2)",
-                            lineHeight: 1.55,
-                            whiteSpace: "pre-wrap",
                             maxWidth: "78ch",
+                            minWidth: 0,
                           }}
                         >
-                          {handoff.text}
+                          <Markdown text={handoff.text} />
                         </div>
                       )}
                     </div>
@@ -502,7 +524,11 @@ function ContractTab({ detail, onSaved }: { detail: TaskDetail; onSaved: () => v
       contract.scope_out.length ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
           {contract.scope_out.map((g) => (
-            <span key={g} className="mono" style={{ fontSize: 12, color: "var(--tx2)" }}>
+            <span
+              key={g}
+              className="mono"
+              style={{ fontSize: 12, color: "var(--tx2)", overflowWrap: "anywhere" }}
+            >
               {g}
             </span>
           ))}
@@ -518,7 +544,10 @@ function ContractTab({ detail, onSaved }: { detail: TaskDetail; onSaved: () => v
       "steps",
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {contract.steps.map((s, i) => (
-          <div key={s.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+          <div
+            key={s.id}
+            style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", minWidth: 0 }}
+          >
             <span className="mono" style={{ fontSize: 11, color: "var(--tx4)" }}>
               {String(i + 1).padStart(2, "0")}
             </span>
@@ -539,7 +568,11 @@ function ContractTab({ detail, onSaved }: { detail: TaskDetail; onSaved: () => v
       "criteria",
       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
         {contract.criteria.map((c) => (
-          <div key={c.id} className="mono" style={{ fontSize: 12, color: "var(--tx2)" }}>
+          <div
+            key={c.id}
+            className="mono"
+            style={{ fontSize: 12, color: "var(--tx2)", overflowWrap: "anywhere" }}
+          >
             <span style={{ color: "var(--tx3)" }}>{c.id}</span> · {c.command}
           </div>
         ))}
@@ -564,7 +597,7 @@ function ContractTab({ detail, onSaved }: { detail: TaskDetail; onSaved: () => v
   if (contract.context) {
     rows.push([
       "known context",
-      <span style={{ fontSize: 13, color: "var(--tx2)", whiteSpace: "pre-wrap" }}>{contract.context}</span>,
+      <Markdown text={contract.context} className="md-tight" />,
     ]);
   }
   if (contract.amendments.length) {
@@ -718,7 +751,10 @@ function ChangesTab({ taskId }: { taskId: string }) {
         <span style={{ marginLeft: "auto", color: "var(--tx4)" }}>{info.branch}</span>
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start" }}>
-        <div className="card-flat" style={{ flex: "1 1 270px", minWidth: 0 }}>
+        <div
+          className="card-flat"
+          style={{ flex: "1 1 260px", minWidth: 0, maxHeight: "70vh", overflowY: "auto" }}
+        >
           {info.files.map((f) => {
             const { dir, name } = splitPath(f.path);
             return (
@@ -726,6 +762,8 @@ function ChangesTab({ taskId }: { taskId: string }) {
                 key={f.path}
                 className="row-btn"
                 style={{
+                  minWidth: 0,
+                  maxWidth: "100%",
                   padding: "10px 12px",
                   borderBottom: "1px solid var(--bd)",
                   background: selected === f.path ? "var(--s3)" : "transparent",
@@ -735,11 +773,34 @@ function ChangesTab({ taskId }: { taskId: string }) {
                 }}
                 onClick={() => setSelected(f.path)}
               >
-                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                  <span className="mono" style={{ fontSize: 11, color: "var(--tx4)" }}>
-                    {dir}
-                  </span>
-                  <span className="mono" style={{ fontSize: 12, fontWeight: 500 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 6,
+                    minWidth: 0,
+                    maxWidth: "100%",
+                    flexWrap: "wrap",
+                  }}
+                  title={f.path}
+                >
+                  {dir && (
+                    <span
+                      className="mono truncate"
+                      style={{ fontSize: 11, color: "var(--tx4)", maxWidth: "100%" }}
+                    >
+                      {dir}
+                    </span>
+                  )}
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 500,
+                      minWidth: 0,
+                      overflowWrap: "anywhere",
+                    }}
+                  >
                     {name}
                   </span>
                 </div>
@@ -774,11 +835,12 @@ function ChangesTab({ taskId }: { taskId: string }) {
               fontSize: 11,
               color: "var(--tx3)",
               background: "var(--s1)",
+              overflowWrap: "anywhere",
             }}
           >
             {selected}
           </div>
-          <div style={{ padding: "8px 0", overflowX: "auto" }}>
+          <div className="scroll-x" style={{ padding: "8px 0", maxHeight: "70vh", overflowY: "auto" }}>
             <DiffLines text={diffText} />
           </div>
         </div>
@@ -789,8 +851,10 @@ function ChangesTab({ taskId }: { taskId: string }) {
 
 function DiffLines({ text }: { text: string }) {
   const lines = text.split("\n");
+  // min-width: max-content so the +/- background stripes span the full
+  // scrolled width instead of stopping at the visible edge.
   return (
-    <>
+    <div style={{ minWidth: "max-content" }}>
       {lines.map((l, i) => {
         const kind = l.startsWith("+++") || l.startsWith("---")
           ? "meta"
@@ -834,7 +898,7 @@ function DiffLines({ text }: { text: string }) {
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -943,6 +1007,7 @@ function OutputTab({ detail, lv }: { detail: TaskDetail; lv?: LivePayload }) {
 
 function Sidebar({ detail, ctxOverride }: { detail: TaskDetail; ctxOverride: TaskDetail["context"] }) {
   const { task, questions } = detail;
+  if (task.status === "scoping") return <ScopingSidebar detail={detail} />;
   const openQ = questions.filter((q) => q.status === "open" && q.type !== "fyi");
   const liveSession = task.steps
     .flatMap((s) => s.sessions)
@@ -1016,14 +1081,62 @@ function Sidebar({ detail, ctxOverride }: { detail: TaskDetail; ctxOverride: Tas
   );
 }
 
+/** Nothing has run yet: what the operator needs is the repo, the branch the
+ * work will land on, and what happens on approval. */
+function ScopingSidebar({ detail }: { detail: TaskDetail }) {
+  const { task, scoping } = detail;
+  return (
+    <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex", flexDirection: "column", gap: 12 }}>
+      <div className="card-flat">
+        <div
+          style={{
+            padding: "10px 14px",
+            borderBottom: "1px solid var(--bd)",
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+          }}
+        >
+          <span className="label" style={{ color: "var(--tx3)" }}>
+            session
+          </span>
+          <span className="mono truncate" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--tx4)" }}>
+            {task.id}
+          </span>
+        </div>
+        <div style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
+          <Meta k="state" v="scoping" color="var(--ac)" sub="agreeing what done means" />
+          <Meta k="repository" v={splitPath(task.repo).name} color="var(--tx)" sub={task.repo} />
+          <Meta k="branch on approval" v={task.branch} color="var(--tx2)" />
+          {scoping?.model && <Meta k="model" v={scoping.model} color="var(--tx2)" />}
+        </div>
+      </div>
+      <div
+        className="card-flat"
+        style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 8 }}
+      >
+        <span className="label" style={{ color: "var(--tx3)" }}>
+          what happens next
+        </span>
+        <div style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx2)" }}>
+          Approving the contract creates the worktree, spawns the first worker, and validates
+          every criterion mechanically. Nothing runs until you approve.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Meta({ k, v, color, sub }: { k: string; v: string; color: string; sub?: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
       <span className="label">{k}</span>
-      <span className="mono" style={{ fontSize: 12.5, color }}>
+      <span className="mono" style={{ fontSize: 12.5, color, overflowWrap: "anywhere" }}>
         {v}
       </span>
-      {sub && <span style={{ fontSize: 11.5, color: "var(--tx3)" }}>{sub}</span>}
+      {sub && (
+        <span style={{ fontSize: 11.5, color: "var(--tx3)", overflowWrap: "anywhere" }}>{sub}</span>
+      )}
     </div>
   );
 }

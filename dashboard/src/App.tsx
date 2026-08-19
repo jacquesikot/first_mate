@@ -15,7 +15,10 @@ type Route =
   | { view: "task"; id: string }
   | { view: "inbox" }
   | { view: "memory" }
-  | { view: "new"; chatId?: string };
+  | { view: "new" }
+  // A bookmarked scoping-chat URL from before scoping moved into the task
+  // session; resolves to that chat's task.
+  | { view: "chat"; chatId: string };
 
 function parseHash(): Route {
   const h = location.hash.replace(/^#\/?/, "");
@@ -23,9 +26,28 @@ function parseHash(): Route {
   if (h === "tasks") return { view: "tasks" };
   if (h === "inbox") return { view: "inbox" };
   if (h === "memory") return { view: "memory" };
-  if (h.startsWith("new/")) return { view: "new", chatId: h.slice(4) };
+  if (h.startsWith("new/")) return { view: "chat", chatId: h.slice(4) };
   if (h === "new") return { view: "new" };
   return { view: "now" };
+}
+
+/** Legacy scoping URL → the task that conversation belongs to. */
+function ChatRedirect({ chatId }: { chatId: string }) {
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api
+      .scopeGet(chatId)
+      .then((d) => {
+        if (d.chat.task_id) location.hash = `#/task/${d.chat.task_id}`;
+        else setError("that scoping conversation has no task");
+      })
+      .catch((e) => setError(String(e)));
+  }, [chatId]);
+  return (
+    <div className="page narrow">
+      <div className="empty">{error ?? "opening the session…"}</div>
+    </div>
+  );
 }
 
 interface Toast {
@@ -109,11 +131,12 @@ export default function App() {
   const blocking = openQuestions.filter((q) => q.type !== "fyi").length;
   const tasks = status?.tasks ?? [];
   const running = tasks.filter((t) => t.status === "running").length;
+  const scoping = tasks.filter((t) => t.status === "scoping").length;
   const maxWorkers = status?.config?.max_workers ?? 3;
 
   const navItems: { key: Route["view"]; label: string; glyph: string; badge: number }[] = [
     { key: "now", label: "Now", glyph: "◆", badge: blocking },
-    { key: "tasks", label: "Tasks", glyph: "≡", badge: running },
+    { key: "tasks", label: "Tasks", glyph: "≡", badge: running + scoping },
     { key: "inbox", label: "Inbox", glyph: "◇", badge: openQuestions.length },
     { key: "memory", label: "Memory", glyph: "▪", badge: 0 },
   ];
@@ -125,12 +148,15 @@ export default function App() {
     inbox: "Inbox",
     memory: "Memory",
     new: "New task",
+    chat: "Task",
   }[route.view];
 
   const headSub =
     route.view === "task" && "id" in route
       ? route.id
-      : `${tasks.length} tasks · ${running} running · ${openQuestions.length} in queue`;
+      : `${tasks.length} tasks · ${running} running${
+          scoping ? ` · ${scoping} scoping` : ""
+        } · ${openQuestions.length} in queue`;
 
   return (
     <AppCtx.Provider value={ctx}>
@@ -155,11 +181,14 @@ export default function App() {
               >
                 fm
               </div>
-              <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em" }}>
+              <div
+                className="sidebar-wide"
+                style={{ fontSize: 14, fontWeight: 600, letterSpacing: "-0.01em" }}
+              >
                 First Mate
               </div>
               <div
-                className="mono"
+                className="mono sidebar-wide"
                 style={{
                   marginLeft: "auto",
                   fontSize: 10,
@@ -177,7 +206,8 @@ export default function App() {
           <nav style={{ display: "flex", flexDirection: "column", gap: 2, padding: "0 10px" }}>
             {navItems.map((n) => {
               const on =
-                route.view === n.key || (n.key === "tasks" && route.view === "task");
+                route.view === n.key ||
+                (n.key === "tasks" && (route.view === "task" || route.view === "chat"));
               const urgent = (n.key === "now" || n.key === "inbox") && n.badge > 0;
               return (
                 <button
@@ -212,6 +242,7 @@ export default function App() {
                     {n.glyph}
                   </span>
                   <span
+                    className="sidebar-wide"
                     style={{
                       fontSize: 13,
                       fontWeight: 500,
@@ -222,7 +253,7 @@ export default function App() {
                   </span>
                   {n.badge > 0 && (
                     <span
-                      className="mono"
+                      className="mono sidebar-wide"
                       style={{
                         marginLeft: "auto",
                         fontSize: 10,
@@ -258,20 +289,11 @@ export default function App() {
               <span className="mono" style={{ fontSize: 13 }}>
                 +
               </span>
-              <span>New task</span>
+              <span className="sidebar-wide">New task</span>
             </button>
           </div>
 
-          <div
-            style={{
-              marginTop: "auto",
-              padding: 12,
-              borderTop: "1px solid var(--bd)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 9,
-            }}
-          >
+          <div className="sidebar-foot sidebar-wide">
             <div
               className="mono"
               style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 10.5, color: "var(--tx3)" }}
@@ -328,20 +350,11 @@ export default function App() {
               <span style={{ fontSize: 15, fontWeight: 600, whiteSpace: "nowrap" }}>
                 {headTitle}
               </span>
-              <span
-                className="mono"
-                style={{
-                  fontSize: 11,
-                  color: "var(--tx3)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <span className="mono truncate" style={{ fontSize: 11, color: "var(--tx3)" }}>
                 {headSub}
               </span>
             </div>
-            <div style={{ marginLeft: "auto" }}>
+            <div style={{ marginLeft: "auto", flex: "0 0 auto" }}>
               <button
                 onClick={() => go("#/inbox")}
                 style={{
@@ -360,7 +373,9 @@ export default function App() {
                 <span className="mono" style={{ fontSize: 11 }}>
                   {blocking ? "△" : "✓"}
                 </span>
-                <span>{blocking ? `${blocking} need you` : "all clear"}</span>
+                <span style={{ whiteSpace: "nowrap" }}>
+                  {blocking ? `${blocking} need you` : "all clear"}
+                </span>
               </button>
             </div>
           </header>
@@ -371,9 +386,8 @@ export default function App() {
             {route.view === "task" && <TaskDetailView taskId={route.id} />}
             {route.view === "inbox" && <InboxView />}
             {route.view === "memory" && <MemoryView />}
-            {route.view === "new" && (
-              <NewTaskView chatId={"chatId" in route ? route.chatId : undefined} />
-            )}
+            {route.view === "new" && <NewTaskView />}
+            {route.view === "chat" && <ChatRedirect chatId={route.chatId} />}
           </div>
         </main>
 

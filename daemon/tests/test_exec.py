@@ -151,3 +151,44 @@ def test_diff_numstat(tmp_path: Path):
     gitops._git(repo, "add", "b.txt")  # staged new file counts: 2 added
     added, deleted = gitops.diff_numstat(repo)
     assert (added, deleted) == (3, 2)
+
+
+def test_numstat_filters_orchestration_noise(tmp_path):
+    """`.fm/` is First Mate's own per-worktree state and caches are droppings;
+    neither belongs in the operator's diff or in diff-tripwire totals."""
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "noisy"
+    gitops.init_repo(repo)
+    (repo / "real.py").write_text("x = 1\n")
+    (repo / ".fm").mkdir()
+    (repo / ".fm" / "guard.json").write_text("{}\n" * 20)
+    (repo / ".fm" / "hooks").mkdir()
+    (repo / ".fm" / "hooks" / "stop.sh").write_text("#!/bin/sh\n")
+    (repo / "__pycache__").mkdir()
+    (repo / "__pycache__" / "real.cpython-312.pyc").write_bytes(b"\x00" * 40)
+    (repo / "stale.pyc").write_bytes(b"\x00")
+
+    paths = {f["path"] for f in gitops.numstat_files(repo)}
+    assert paths == {"real.py"}
+
+    # ...and a tracked .fm file doesn't inflate the tripwire totals either.
+    gitops._git(repo, "add", "-f", ".fm/guard.json", "real.py")
+    gitops._git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-qm", "add")
+    (repo / ".fm" / "guard.json").write_text("{}\n" * 400)
+    (repo / "real.py").write_text("x = 1\ny = 2\n")
+    added, deleted = gitops.diff_numstat(repo)
+    assert added == 1 and deleted == 0
+    assert {f["path"] for f in gitops.numstat_files(repo)} == {"real.py"}
+
+
+def test_is_review_noise():
+    from firstmate.exec import gitops
+
+    for noisy in [".fm/guard.json", ".fm/hooks/stop.sh", "a/__pycache__/b.pyc",
+                  "x.pyc", "node_modules/pkg/index.js", ".pytest_cache/v/x"]:
+        assert gitops.is_review_noise(noisy), noisy
+    for clean in ["src/app.py", "README.md", "fm_helper.py", "a/fmx/b.py",
+                  "docs/.fmrc"]:
+        assert not gitops.is_review_noise(clean), clean

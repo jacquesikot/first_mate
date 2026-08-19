@@ -190,7 +190,24 @@ class Manager:
         resume the tasks from state files."""
         for row in self.store.list_tasks():
             task = self.store.load_task(row["id"])
-            if task is None or task.status not in ("running", "validating"):
+            if task is None:
+                continue
+            if task.status == "scoping":
+                # A scoping turn is a subprocess of the dead daemon; nothing
+                # will ever complete it. Hand the conversation back to the
+                # operator — the transcript is intact, so the next message
+                # resumes it.
+                chat = scoping_api.find_chat_for_task(self.store.home, task.id)
+                if chat is not None and chat.status == "thinking":
+                    chat.messages.append({
+                        "role": "system",
+                        "text": "the daemon restarted mid-turn — send another "
+                                "message to pick the conversation back up",
+                        "at": now_iso()})
+                    chat.status = "awaiting_operator"
+                    chat.save()
+                continue
+            if task.status not in ("running", "validating"):
                 continue
             for st in task.steps:
                 for rec in st.sessions:
@@ -334,8 +351,17 @@ def create_app(store: Store | None = None, autostart: bool = True,
                 validations["__task__"] = json.loads(tval.read_text())
             except json.JSONDecodeError:
                 pass
+        scoping_chat = None
+        if task.status == "scoping":
+            chat = (chats.get(task.scoping_chat_id or "")
+                    or scoping_api.find_chat_for_task(store.home, task_id))
+            if chat is not None:
+                scoping_api.refresh_contract(chat)
+                chats[chat.id] = chat
+                scoping_chat = chat.to_dict()
         return {
             "task": task.to_dict(),
+            "scoping": scoping_chat,
             "contract": contract.to_dict() if contract else None,
             "contract_md": (store.task_dir(task_id) / "contract.md").read_text()
             if (store.task_dir(task_id) / "contract.md").exists() else None,
@@ -353,6 +379,9 @@ def create_app(store: Store | None = None, autostart: bool = True,
         task = get_task_or_404(task_id)
         if task.status in TERMINAL_TASK_STATUSES:
             raise HTTPException(409, f"task is {task.status}")
+        if task.status == "scoping":
+            raise HTTPException(409, "task is still being scoped — approve its "
+                                     "contract first")
         if task.status == "paused":
             task.status = "ready"
             store.save_task(task)
@@ -376,6 +405,16 @@ def create_app(store: Store | None = None, autostart: bool = True,
         task = get_task_or_404(task_id)
         if manager.deliver(task_id, {"kind": "control", "action": "abandoned"}):
             return {"delivered": True}
+        if task.status == "scoping":
+            # Close the conversation too — an orphaned chat would keep
+            # resuming a session for a task nobody is waiting on.
+            chat = (chats.get(task.scoping_chat_id or "")
+                    or scoping_api.find_chat_for_task(store.home, task_id))
+            if chat is not None and chat.status not in ("approved", "abandoned"):
+                chat.status = "abandoned"
+                chat.save()
+                chats[chat.id] = chat
+            task.scoping_chat_id = None
         task.status = "abandoned"
         store.save_task(task)
         evt = store.append_event(task_id, "task_status", data={"status": "abandoned"})
@@ -524,6 +563,7 @@ def create_app(store: Store | None = None, autostart: bool = True,
 
     chats: dict[str, scoping_api.ScopingChat] = {}
     chat_locks: dict[str, asyncio.Lock] = {}
+    background_turns: set[asyncio.Task] = set()  # strong refs; GC would cancel
 
     def get_chat_or_404(chat_id: str) -> scoping_api.ScopingChat:
         chat = chats.get(chat_id) or scoping_api.load_chat(store.home, chat_id)
@@ -540,8 +580,53 @@ def create_app(store: Store | None = None, autostart: bool = True,
             chat = await asyncio.to_thread(scoping_api.advance, chat, text)
         chats[chat.id] = chat
         await manager.broadcast({"kind": "scoping", "id": chat.id,
-                                 "status": chat.status})
+                                 "status": chat.status,
+                                 "task_id": chat.task_id})
+        if chat.task_id:
+            # The chat lives inside a task session; nudge task subscribers.
+            evt = {"ts": chat.messages[-1]["at"] if chat.messages else "",
+                   "event": "scoping_turn", "task_id": chat.task_id,
+                   "step_id": None, "data": {"status": chat.status}}
+            await manager.broadcast(evt)
         return chat
+
+    def spawn_chat_turn(chat: scoping_api.ScopingChat, text: str) -> None:
+        """Fire a turn off the request path. Scoping turns take minutes
+        (the assistant reads the repo); the browser follows along on the
+        task page over the websocket instead of holding a request open."""
+        async def go():
+            try:
+                await run_chat_turn(chat, text)
+            except HTTPException:
+                # A turn was already running (the endpoint's pre-check lost a
+                # race). The operator's message is already recorded and the
+                # chat is `thinking`, so leaving it here would hang forever —
+                # hand it back instead.
+                current = chats.get(chat.id, chat)
+                if current.status == "thinking":
+                    current.messages.append({
+                        "role": "system",
+                        "text": "another turn was already running — send that "
+                                "again once it finishes",
+                        "at": now_iso()})
+                    current.status = "awaiting_operator"
+                    current.save()
+                    chats[current.id] = current
+                    await manager.broadcast({"kind": "scoping", "id": current.id,
+                                             "status": current.status,
+                                             "task_id": current.task_id})
+            except Exception as e:  # never lose the chat to an unexpected error
+                current = chats.get(chat.id, chat)
+                current.messages.append({
+                    "role": "system", "text": f"turn failed: {e}",
+                    "at": now_iso()})
+                current.status = "failed"
+                current.save()
+                chats[current.id] = current
+
+        task = asyncio.create_task(go())
+        background_turns.add(task)
+        task.add_done_callback(background_turns.discard)
 
     @app.post("/scoping")
     async def start_scoping(request: Request):
@@ -555,15 +640,26 @@ def create_app(store: Store | None = None, autostart: bool = True,
             raise HTTPException(400, f"repo path does not exist: {repo}")
         if not (rp / ".git").exists():
             raise HTTPException(400, f"not a git repository: {rp}")
+        # Task-first: the session exists before the conversation does, so
+        # scoping happens in a task view and shows up in the queue at once.
+        placeholder = Contract(goal=goal, repo=str(rp.resolve()))
+        task = store.create_task(placeholder, status="scoping")
         chat = scoping_api.start_chat(
             store.home, goal, rp.resolve(),
             model=manager.config.get("scoping_model"),
+            task_id=task.id,
         )
+        chat.save()
         chats[chat.id] = chat
-        # First turn runs inline: the assistant reads repo + memory and
-        # opens with a proposal (PRD §6.1 — no questionnaire).
-        chat = await run_chat_turn(chat, "")
-        return {"chat": chat.to_dict()}
+        task.scoping_chat_id = chat.id
+        store.save_task(task)
+        evt = store.append_event(task.id, "scoping_started",
+                                 data={"chat_id": chat.id})
+        await manager.broadcast(evt)
+        # The opening turn (assistant reads repo + memory, then proposes —
+        # PRD §6.1, no questionnaire) runs in the background.
+        spawn_chat_turn(chat, "")
+        return {"chat": chat.to_dict(), "task": task.to_dict()}
 
     @app.get("/scoping/{chat_id}")
     async def get_scoping(chat_id: str):
@@ -574,11 +670,23 @@ def create_app(store: Store | None = None, autostart: bool = True,
         chat = get_chat_or_404(chat_id)
         if chat.status in ("approved", "abandoned"):
             raise HTTPException(409, f"chat is {chat.status}")
+        if chat_locks.setdefault(chat.id, asyncio.Lock()).locked():
+            raise HTTPException(409, "a turn is already running for this chat")
         body = await request.json()
         text = str(body.get("text", "")).strip()
         if not text:
             raise HTTPException(400, "text is required")
-        chat = await run_chat_turn(chat, text)
+        if bool(body.get("wait")):  # tests and the CLI want it synchronous
+            chat = await run_chat_turn(chat, text)
+            return {"chat": chat.to_dict()}
+        # Record the operator's turn immediately so the browser sees its own
+        # message and the thinking state without waiting on claude.
+        chat.messages.append({"role": "operator", "text": text,
+                              "at": now_iso()})
+        chat.status = "thinking"
+        chat.save()
+        chats[chat.id] = chat
+        spawn_chat_turn(chat, text)
         return {"chat": chat.to_dict()}
 
     @app.post("/scoping/{chat_id}/approve")
@@ -587,13 +695,27 @@ def create_app(store: Store | None = None, autostart: bool = True,
         if chat.status == "approved":
             raise HTTPException(409, "already approved")
         body = await request.json()
+        run = bool(body.get("run", True))
         scoping_api.refresh_contract(chat)
         if chat.contract is None:
             raise HTTPException(400, "no contract written yet — keep scoping")
-        if chat.contract_errors:
-            raise HTTPException(400, {"errors": chat.contract_errors})
-        task, started = await create_task_from_contract(
-            chat.contract, bool(body.get("run", True)))
+        errors = validate_contract(chat.contract)
+        repo = str(chat.contract.get("repo", ""))
+        if repo and not Path(repo).expanduser().is_dir():
+            errors.append(f"repo path does not exist: {repo}")
+        if errors:
+            raise HTTPException(400, {"errors": errors})
+        # The task already exists (created when scoping started) — adopt the
+        # contract into it rather than minting a second task.
+        task = store.load_task(chat.task_id) if chat.task_id else None
+        if task is not None and task.status == "scoping":
+            task = store.adopt_contract(task, Contract.from_dict(chat.contract))
+            started = manager.start(task.id) if run else False
+            evt = store.append_event(task.id, "task_ready",
+                                     data={"started": started})
+            await manager.broadcast(evt)
+        else:
+            task, started = await create_task_from_contract(chat.contract, run)
         chat.status = "approved"
         chat.task_id = task.id
         chat.save()
@@ -607,6 +729,16 @@ def create_app(store: Store | None = None, autostart: bool = True,
         chat = get_chat_or_404(chat_id)
         chat.status = "abandoned"
         chat.save()
+        # A scoping task with no contract has nothing to keep.
+        if chat.task_id:
+            task = store.load_task(chat.task_id)
+            if task is not None and task.status == "scoping":
+                task.status = "abandoned"
+                task.scoping_chat_id = None
+                store.save_task(task)
+                evt = store.append_event(task.id, "task_abandoned",
+                                         data={"reason": "scoping abandoned"})
+                await manager.broadcast(evt)
         return {"chat": chat.to_dict()}
 
     # ------------------------------------------------------------- memory

@@ -1,5 +1,7 @@
 """Daemon API — hermetic (autostart=False: no workers, tmux, or claude)."""
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -222,6 +224,17 @@ def test_fs_browse_and_repos(client, tmp_path):
     assert any(r["path"] == client.repo and r["source"] == "recent" for r in repos)
 
 
+def _await_chat(client, chat_id, want, tries=80):
+    """Scoping turns run off the request path now; poll for the outcome."""
+    import time
+    for _ in range(tries):
+        chat = client.get(f"/scoping/{chat_id}").json()["chat"]
+        if chat["status"] in want:
+            return chat
+        time.sleep(0.02)
+    raise AssertionError(f"chat stuck in {chat['status']}, wanted {want}")
+
+
 def test_scoping_chat_flow(client, tmp_path, monkeypatch):
     import json as _json
 
@@ -253,27 +266,50 @@ def test_scoping_chat_flow(client, tmp_path, monkeypatch):
 
     r = client.post("/scoping", json={"goal": "scope me", "repo": str(repo)})
     assert r.status_code == 200, r.text
-    chat = r.json()["chat"]
-    assert chat["status"] == "awaiting_operator"
+    body = r.json()
+    # Task-first: the session exists immediately, in the queue, in `scoping`.
+    tid = body["task"]["id"]
+    assert body["task"]["status"] == "scoping"
+    assert body["task"]["scoping_chat_id"] == body["chat"]["id"]
+    assert [t["id"] for t in client.get("/status").json()["tasks"]] == [tid]
+    # ...and it cannot be run until a contract is approved
+    assert client.post(f"/tasks/{tid}/run").status_code == 409
+
+    chat = _await_chat(client, body["chat"]["id"], {"awaiting_operator"})
     assert chat["session_id"] == "sid-1"
     assert chat["messages"][-1]["role"] == "firstmate"
     assert "proposed scope" in chat["messages"][-1]["text"]
     # first turn sends the scoping prompt, not the goal string alone
     assert "scoping assistant" in turns[0]
 
-    r = client.post(f"/scoping/{chat['id']}/message", json={"text": "looks right, finalize"})
-    chat = r.json()["chat"]
-    assert chat["status"] == "contract_ready"
+    # The task detail carries the conversation — it renders in the session.
+    detail = client.get(f"/tasks/{tid}").json()
+    assert detail["scoping"]["id"] == chat["id"]
+    assert len(detail["scoping"]["messages"]) == 1
+
+    r = client.post(f"/scoping/{chat['id']}/message",
+                    json={"text": "looks right, finalize"})
+    # The operator turn is recorded synchronously; the reply arrives later.
+    assert r.json()["chat"]["messages"][-1]["role"] == "operator"
+    chat = _await_chat(client, chat["id"], {"contract_ready"})
     assert chat["contract"]["goal"] == "scope me"
     assert chat["contract_errors"] == []
+    # exactly one operator message — the pre-append must not double up
+    assert sum(1 for m in chat["messages"] if m["role"] == "operator") == 1
 
     r = client.post(f"/scoping/{chat['id']}/approve", json={"run": False})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["started"] is False
     assert body["chat"]["status"] == "approved"
-    tid = body["task"]["id"]
-    assert client.get(f"/tasks/{tid}").json()["task"]["status"] == "ready"
+    # Approval adopts the contract into the SAME task — no second task.
+    assert body["task"]["id"] == tid
+    assert len(client.get("/tasks").json()["tasks"]) == 1
+    detail = client.get(f"/tasks/{tid}").json()
+    assert detail["task"]["status"] == "ready"
+    assert detail["task"]["scoping_chat_id"] is None
+    assert detail["scoping"] is None
+    assert [st["id"] for st in detail["task"]["steps"]] == ["s1"]
     # double-approve rejected; messaging an approved chat rejected
     assert client.post(f"/scoping/{chat['id']}/approve", json={}).status_code == 409
     assert client.post(f"/scoping/{chat['id']}/message",
@@ -281,6 +317,88 @@ def test_scoping_chat_flow(client, tmp_path, monkeypatch):
     # rehydration from disk after a "restart" (fresh app over same home)
     reloaded = scoping_api.load_chat(client.store.home, chat["id"])
     assert reloaded is not None and reloaded.status == "approved"
+
+
+def test_scoping_abandon_abandons_its_task(client, tmp_path, monkeypatch):
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "abandonrepo"
+    gitops.init_repo(repo)
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        lambda chat, text: ("proposal", "sid-1"))
+
+    body = client.post("/scoping", json={"goal": "drop me",
+                                         "repo": str(repo)}).json()
+    tid, cid = body["task"]["id"], body["chat"]["id"]
+    _await_chat(client, cid, {"awaiting_operator"})
+    client.post(f"/scoping/{cid}/abandon")
+    assert client.get(f"/tasks/{tid}").json()["task"]["status"] == "abandoned"
+
+    # ...and the other direction: abandoning the task closes the chat.
+    body = client.post("/scoping", json={"goal": "drop me too",
+                                         "repo": str(repo)}).json()
+    tid, cid = body["task"]["id"], body["chat"]["id"]
+    _await_chat(client, cid, {"awaiting_operator"})
+    client.post(f"/tasks/{tid}/abandon")
+    assert client.get(f"/scoping/{cid}").json()["chat"]["status"] == "abandoned"
+
+
+def test_scoping_abandon_during_turn_stays_abandoned(client, tmp_path, monkeypatch):
+    """Turns run off the request path, so an operator can abandon while one is
+    in flight. The landing turn must not resurrect the conversation."""
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "racerepo"
+    gitops.init_repo(repo)
+
+    def runner_that_abandons_midway(chat, text):
+        # Simulate the operator hitting abandon while claude is thinking:
+        # the endpoint writes the terminal status straight to disk.
+        import json as _json
+        path = Path(chat.dir) / "scoping.json"
+        disk = _json.loads(path.read_text())
+        disk["status"] = "abandoned"
+        path.write_text(_json.dumps(disk))
+        return "here is a proposal nobody asked for any more", "sid-1"
+
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        runner_that_abandons_midway)
+    body = client.post("/scoping", json={"goal": "race me",
+                                         "repo": str(repo)}).json()
+    chat = _await_chat(client, body["chat"]["id"], {"abandoned"})
+    assert chat["status"] == "abandoned"
+    # the reply is still recorded — nothing is lost, it just doesn't reopen
+    assert chat["messages"][-1]["role"] == "firstmate"
+
+
+def test_scoping_never_hangs_in_thinking(client, tmp_path, monkeypatch):
+    """The operator's message is recorded before the turn is spawned, so any
+    path that drops the turn must hand the chat back rather than leave it
+    `thinking` with an unanswered message."""
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "hangrepo"
+    gitops.init_repo(repo)
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        lambda chat, text: ("proposal", "sid-1"))
+    body = client.post("/scoping", json={"goal": "no hang",
+                                         "repo": str(repo)}).json()
+    cid = body["chat"]["id"]
+    _await_chat(client, cid, {"awaiting_operator"})
+
+    # A runner that blows up in a way `advance` does not handle (it catches
+    # RuntimeError/TimeoutExpired/OSError) must still settle the chat.
+    def exploding(chat, text):
+        raise ValueError("something nobody planned for")
+
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess", exploding)
+    client.post(f"/scoping/{cid}/message", json={"text": "go on"})
+    chat = _await_chat(client, cid, {"failed", "awaiting_operator"})
+    assert chat["status"] != "thinking"
+    assert chat["messages"][-1]["role"] == "system"
 
 
 def test_scoping_failed_turn(client, tmp_path, monkeypatch):
@@ -295,9 +413,11 @@ def test_scoping_failed_turn(client, tmp_path, monkeypatch):
 
     monkeypatch.setattr(scoping_api, "run_turn_subprocess", broken_runner)
     r = client.post("/scoping", json={"goal": "g", "repo": str(repo)})
-    chat = r.json()["chat"]
-    assert chat["status"] == "failed"
+    chat = _await_chat(client, r.json()["chat"]["id"], {"failed"})
     assert "turn failed" in chat["messages"][-1]["text"]
+    # the task survives so the operator can retry or abandon deliberately
+    assert client.get(f"/tasks/{r.json()['task']['id']}").json()[
+        "task"]["status"] == "scoping"
 
 
 def test_websocket_snapshot(client):

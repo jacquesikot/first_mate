@@ -276,6 +276,10 @@ class Task:
     worktree: str = ""
     goal: str = ""
     current_step: str | None = None
+    # Set while status == "scoping": the conversation that will produce
+    # this task's contract. The task exists from the first keystroke so
+    # scoping happens inside a session, not in a New-task limbo.
+    scoping_chat_id: str | None = None
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
     steps: list[StepState] = field(default_factory=list)

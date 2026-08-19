@@ -2,6 +2,7 @@ import { createContext, useContext, useState } from "react";
 import type { ContextInfo, Question, StatusInfo, LivePayload } from "./api";
 import { api } from "./api";
 import { STATUS_GLYPH, ago, ctxColor, statusColor, tokens } from "./format";
+import { Markdown } from "./markdown";
 
 // ------------------------------------------------------------- app context
 
@@ -247,6 +248,7 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           padding: "10px 15px",
           borderBottom: "1px solid var(--bd)",
           background: "rgba(0,0,0,.18)",
+          flexWrap: "wrap",
         }}
       >
         <span className={`chip${accent && !answered ? " accent" : ""}`}>
@@ -258,14 +260,9 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           </span>
         )}
         <button
+          className="truncate"
           onClick={() => go(`#/task/${q.task_id}`)}
-          style={{
-            fontSize: 13,
-            color: "var(--tx2)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
+          style={{ fontSize: 13, color: "var(--tx2)", flex: "1 1 120px", textAlign: "left" }}
         >
           {taskGoal ?? q.task_id}
         </button>
@@ -287,13 +284,16 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
 
       {!answered ? (
         <div style={{ padding: 15 }}>
-          <div style={{ fontSize: 14.5, lineHeight: 1.5, maxWidth: "76ch" }}>{q.question}</div>
+          <Markdown
+            text={q.question}
+            className="question-body"
+          />
           {chips.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 11 }}>
               {chips.map(([k, v]) => (
-                <span key={k} className="evidence-chip">
-                  <span style={{ color: "var(--tx4)" }}>{k}</span>
-                  <span style={{ color: "var(--tx2)" }}>{v}</span>
+                <span key={k} className="evidence-chip" style={{ maxWidth: "100%" }}>
+                  <span style={{ color: "var(--tx4)", flex: "0 0 auto" }}>{k}</span>
+                  <span style={{ color: "var(--tx2)", overflowWrap: "anywhere" }}>{v}</span>
                 </span>
               ))}
             </div>

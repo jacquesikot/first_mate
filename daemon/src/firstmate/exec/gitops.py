@@ -84,15 +84,38 @@ def diff_stat(worktree: Path) -> str:
     return _git(worktree, "diff", "HEAD", "--stat").stdout
 
 
+# Paths that are never part of what the operator is reviewing: First Mate's
+# own per-worktree state, and build/cache droppings a repo without a
+# .gitignore would otherwise surface as "changes".
+NOISE_PREFIXES = (".fm/",)
+NOISE_DIRS = frozenset({
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules", ".venv", ".DS_Store",
+})
+NOISE_SUFFIXES = (".pyc", ".pyo")
+
+
+def is_review_noise(path: str) -> bool:
+    """True for paths that shouldn't appear in the operator's diff."""
+    if path.startswith(NOISE_PREFIXES) or path == ".fm":
+        return True
+    if path.endswith(NOISE_SUFFIXES):
+        return True
+    return any(part in NOISE_DIRS for part in path.split("/"))
+
+
 def numstat_files(worktree: Path) -> list[dict]:
     """Per-file (added, deleted) vs HEAD for tracked changes, plus
     untracked files (line counts from the file itself). Binary files
-    report None counts."""
+    report None counts. First Mate's own `.fm/` state and build caches are
+    filtered out — they are orchestration, not the work under review."""
     out = _git(worktree, "diff", "HEAD", "--numstat").stdout
     files: list[dict] = []
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) < 3:
+            continue
+        if is_review_noise(parts[2]):
             continue
         files.append({
             "path": parts[2],
@@ -102,7 +125,7 @@ def numstat_files(worktree: Path) -> list[dict]:
         })
     ls = _git(worktree, "ls-files", "--others", "--exclude-standard").stdout
     for path in ls.splitlines():
-        if not path.strip():
+        if not path.strip() or is_review_noise(path):
             continue
         added = None
         try:
@@ -127,13 +150,15 @@ def diff_file(worktree: Path, path: str) -> str:
 
 
 def diff_numstat(worktree: Path) -> tuple[int, int]:
-    """(added, deleted) line totals vs HEAD for tracked files. Binary
-    files report '-' in numstat and are counted as 0."""
+    """(added, deleted) line totals vs HEAD for tracked files, excluding
+    review noise (see `is_review_noise`). Binary files report '-' in
+    numstat and are counted as 0. Diff tripwires read these totals, so
+    First Mate's own state must not count against the operator's budget."""
     out = _git(worktree, "diff", "HEAD", "--numstat").stdout
     added = deleted = 0
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) < 3:
+        if len(parts) < 3 or is_review_noise(parts[2]):
             continue
         added += int(parts[0]) if parts[0].isdigit() else 0
         deleted += int(parts[1]) if parts[1].isdigit() else 0

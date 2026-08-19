@@ -6,6 +6,7 @@ import type { TaskRow } from "../api";
 const GROUPS: [string, string, string, string][] = [
   // [status, label, color, hint]
   ["blocked", "blocked — waiting on you", "var(--ac)", "parked · no worker slot held"],
+  ["scoping", "scoping — agreeing the contract", "var(--ac)", "conversation open · nothing running"],
   ["running", "running", "var(--ok)", "live sessions, streamed"],
   ["validating", "validating", "var(--tx2)", "criteria collected at task boundary"],
   ["ready", "ready to run", "var(--tx2)", "contract approved, awaiting a slot"],
@@ -28,9 +29,9 @@ export function TasksView() {
     filter === "all"
       ? true
       : filter === "needs"
-        ? qCount(t) > 0 || t.status === "blocked"
+        ? qCount(t) > 0 || t.status === "blocked" || t.status === "scoping"
         : filter === "active"
-          ? ["running", "blocked", "validating", "ready", "paused"].includes(t.status)
+          ? ["running", "blocked", "validating", "ready", "paused", "scoping"].includes(t.status)
           : ["done", "failed", "abandoned"].includes(t.status);
 
   const filters: [Filter, string][] = [
@@ -41,15 +42,7 @@ export function TasksView() {
   ];
 
   return (
-    <div
-      style={{
-        padding: "22px 22px 60px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 20,
-        maxWidth: 1180,
-      }}
-    >
+    <div className="page" style={{ gap: 20 }}>
       <div
         style={{
           display: "flex",
@@ -155,10 +148,18 @@ export function TasksView() {
                       <span>/</span>
                       <span>{t.branch}</span>
                       <span>·</span>
-                      <span>{t.id}</span>
+                      <span className="truncate">{t.id}</span>
                     </div>
                   </div>
-                  <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 16 }}>
+                  <div
+                    style={{
+                      flex: "0 0 auto",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 16,
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div
                       className="mono"
                       style={{
@@ -171,7 +172,9 @@ export function TasksView() {
                         textAlign: "left",
                       }}
                     >
-                      {t.current_step ?? "—"}
+                      {t.status === "scoping"
+                        ? "awaiting contract"
+                        : (t.current_step ?? "—")}
                       {(t.generation ?? 0) > 1 ? ` · gen ${t.generation}` : ""}
                     </div>
                     <ContextMeter ctx={ctx} width={92} />

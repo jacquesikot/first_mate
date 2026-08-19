@@ -22,6 +22,7 @@ export function NowView() {
           : 1
     );
   const liveTasks = tasks.filter((t) => t.status === "running" || t.status === "validating");
+  const scopingTasks = tasks.filter((t) => t.status === "scoping");
   const settled = tasks.filter((t) => ["done", "failed", "abandoned"].includes(t.status));
   const memoryHint = "fm remember appends · injected every session";
 
@@ -55,15 +56,7 @@ export function NowView() {
   );
 
   return (
-    <div
-      style={{
-        padding: "22px 22px 60px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 26,
-        maxWidth: 1180,
-      }}
-    >
+    <div className="page" style={{ gap: 26 }}>
       <section
         style={{
           display: "grid",
@@ -78,7 +71,11 @@ export function NowView() {
           `${status?.config?.max_workers ?? "—"} slots`
         )}
         {stat("open questions", questions.length, `${questions.length - blocking.length} non-blocking`)}
-        {stat("tasks", tasks.length, `${settled.length} settled`)}
+        {stat(
+          "tasks",
+          tasks.length,
+          scopingTasks.length ? `${scopingTasks.length} scoping` : `${settled.length} settled`
+        )}
       </section>
 
       <section style={{ display: "flex", flexDirection: "column", gap: 11 }}>
@@ -106,13 +103,21 @@ export function NowView() {
           const ctx = lv?.context ?? t.context ?? null;
           return (
             <article key={t.id} className="card">
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 16px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 14,
+                  padding: "14px 16px",
+                  flexWrap: "wrap",
+                }}
+              >
                 <span style={{ paddingTop: 3 }}>
                   <Glyph status={t.status} animate />
                 </span>
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <button
-                    className="row-btn"
+                    className="row-btn truncate"
                     style={{ fontSize: 15, fontWeight: 500, letterSpacing: "-0.01em" }}
                     onClick={() => go(`#/task/${t.id}`)}
                   >
@@ -209,6 +214,48 @@ export function NowView() {
         {liveTasks.length === 0 && <div className="empty">No live sessions.</div>}
       </section>
 
+      {scopingTasks.length > 0 && (
+        <section style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+          <SectionHead title="scoping" hint="conversation open · nothing running yet" />
+          <div className="card-flat">
+            {scopingTasks.map((t) => (
+              <button
+                key={t.id}
+                className="row-btn hoverable"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 13,
+                  padding: "11px 16px",
+                  borderBottom: "1px solid var(--bd)",
+                  minWidth: 0,
+                }}
+                onClick={() => go(`#/task/${t.id}`)}
+              >
+                <Glyph status={t.status} />
+                <span className="truncate" style={{ fontSize: 13.5 }}>
+                  {t.goal}
+                </span>
+                <span
+                  className="mono"
+                  style={{
+                    marginLeft: "auto",
+                    display: "flex",
+                    gap: 16,
+                    fontSize: 11,
+                    color: "var(--tx4)",
+                    flex: "0 0 auto",
+                  }}
+                >
+                  <span>{repoName(t.repo)}</span>
+                  <span style={{ color: "var(--ac)" }}>continue →</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {settled.length > 0 && (
         <section style={{ display: "flex", flexDirection: "column", gap: 11 }}>
           <SectionHead title="settled" hint={memoryHint} />
@@ -223,19 +270,12 @@ export function NowView() {
                   gap: 13,
                   padding: "11px 16px",
                   borderBottom: "1px solid var(--bd)",
+                  minWidth: 0,
                 }}
                 onClick={() => go(`#/task/${t.id}`)}
               >
                 <Glyph status={t.status} />
-                <span
-                  style={{
-                    fontSize: 13.5,
-                    color: "var(--tx2)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
+                <span className="truncate" style={{ fontSize: 13.5, color: "var(--tx2)" }}>
                   {t.goal}
                 </span>
                 <span

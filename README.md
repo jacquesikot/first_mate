@@ -30,14 +30,24 @@ daemon API, visually translated from the prototype below. Build once with
 `cd dashboard && pnpm install && pnpm build`; the daemon then serves it at
 `http://127.0.0.1:<port>/ui/` (`fm serve --open`). For UI development,
 `pnpm dev` proxies API + WebSocket calls to a locally running daemon.
+`pnpm test` runs the frontend unit tests (vitest).
 
-Views: **Now** (needs-you queue, live sessions with streamed output,
-settled list), **Tasks** (board grouped by lifecycle), **Task detail**
-(step timeline with the generation rail and handoff briefs, criteria with
-validation evidence, contract render/edit between steps, changed files +
-diff viewer, live output, question history), **Inbox**, **Memory**
-(view/edit/append), **New task** (contract submission; the scoping
-conversation itself stays in the terminal for now).
+Views: **Now** (needs-you queue, live sessions with streamed output, open
+scoping sessions, settled list), **Tasks** (board grouped by lifecycle),
+**Task detail** (the scoping conversation while the task is being scoped;
+then the step timeline with the generation rail and handoff briefs, criteria
+with validation evidence, contract render/edit between steps, changed files
++ diff viewer, live output, question history), **Inbox**, **Memory**
+(view/edit/append), **New task** (repo picker + goal).
+
+**Starting a task is task-first:** pick a repo, say what you want, and
+First Mate creates the session immediately (status `scoping`) and hands you
+its task view. The scoping conversation happens inside that session — it
+shows up in the queue from the first keystroke, survives a reload or a
+daemon restart, and approving its contract turns that same task into a
+running one. Assistant text (scoping replies, questions, handoff briefs)
+renders as markdown. Pasting a pre-written contract JSON remains a secondary
+path on the New task view.
 
 ## prototype/First Mate System Prototype.html
 

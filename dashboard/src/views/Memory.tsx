@@ -69,15 +69,7 @@ export function MemoryView() {
   };
 
   return (
-    <div
-      style={{
-        padding: "22px 22px 60px",
-        maxWidth: 960,
-        display: "flex",
-        flexDirection: "column",
-        gap: 18,
-      }}
-    >
+    <div className="page" style={{ maxWidth: 960, gap: 18 }}>
       <div
         className="mono"
         style={{

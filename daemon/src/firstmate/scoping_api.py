@@ -67,7 +67,8 @@ class ScopingChat:
 
 
 def start_chat(home: Path, goal: str, repo: Path,
-               model: str | None = None) -> ScopingChat:
+               model: str | None = None,
+               task_id: str | None = None) -> ScopingChat:
     chat_dir = home / "scoping" / f"{slugify(goal)}-{uuid.uuid4().hex[:6]}"
     chat_dir.mkdir(parents=True, exist_ok=True)
     memory = None
@@ -81,7 +82,7 @@ def start_chat(home: Path, goal: str, repo: Path,
     (chat_dir / "prompt.md").write_text(prompt)
     chat = ScopingChat(
         id=new_id("scope"), goal=goal, repo=str(repo), dir=str(chat_dir),
-        model=model,
+        model=model, task_id=task_id,
     )
     chat.save()
     return chat
@@ -99,6 +100,21 @@ def load_chat(home: Path, chat_id: str) -> ScopingChat | None:
         except (json.JSONDecodeError, OSError):
             continue
         if data.get("id") == chat_id:
+            return ScopingChat.from_dict(data)
+    return None
+
+
+def find_chat_for_task(home: Path, task_id: str) -> ScopingChat | None:
+    """The scoping conversation belonging to a task (task-first flow)."""
+    root = home / "scoping"
+    if not root.is_dir():
+        return None
+    for p in root.glob("*/scoping.json"):
+        try:
+            data = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("task_id") == task_id:
             return ScopingChat.from_dict(data)
     return None
 
@@ -167,27 +183,54 @@ def advance(chat: ScopingChat, text: str, runner=None) -> ScopingChat:
     runner = runner or run_turn_subprocess
     is_first = not chat.messages
     prompt = (Path(chat.dir) / "prompt.md").read_text() if is_first else text
-    if not is_first:
+    # The caller may have already recorded the operator turn (the browser
+    # flow does, so the message and the thinking state appear immediately);
+    # don't record it twice.
+    already = (not is_first and chat.messages[-1].get("role") == "operator"
+               and chat.messages[-1].get("text") == text)
+    if not is_first and not already:
         chat.messages.append({"role": "operator", "text": text, "at": now_iso()})
     chat.status = "thinking"
     chat.save()
     try:
         reply, new_sid = runner(chat, prompt)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
-        chat.status = "failed"
         chat.messages.append({"role": "system", "text": f"turn failed: {e}",
                               "at": now_iso()})
+        if not _abandoned_meanwhile(chat):
+            chat.status = "failed"
         chat.save()
         return chat
     if new_sid:
         chat.session_id = new_sid
     chat.messages.append({"role": "firstmate", "text": reply, "at": now_iso()})
     refresh_contract(chat)
+    # A turn started before the operator abandoned (or approved) must not
+    # resurrect the conversation when it lands — turns run off the request
+    # path now, so that race is real. Found live.
+    if _abandoned_meanwhile(chat):
+        chat.save()
+        return chat
     chat.status = "contract_ready" if (
         chat.contract is not None and not chat.contract_errors
     ) else "awaiting_operator"
     chat.save()
     return chat
+
+
+def _abandoned_meanwhile(chat: ScopingChat) -> bool:
+    """True if the chat reached a terminal status on disk while the turn ran.
+    The record on disk is authoritative — this object was captured earlier."""
+    path = Path(chat.dir) / "scoping.json"
+    try:
+        disk = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return False
+    if disk.get("status") in ("abandoned", "approved"):
+        chat.status = disk["status"]
+        chat.task_id = disk.get("task_id") or chat.task_id
+        return True
+    return False
 
 
 def refresh_contract(chat: ScopingChat) -> None:
@@ -213,6 +256,6 @@ def refresh_contract(chat: ScopingChat) -> None:
 
 
 __all__ = [
-    "ScopingChat", "start_chat", "load_chat", "advance", "refresh_contract",
-    "run_turn_subprocess", "OPEN_STATUSES",
+    "ScopingChat", "start_chat", "load_chat", "find_chat_for_task", "advance",
+    "refresh_contract", "run_turn_subprocess", "OPEN_STATUSES",
 ]
