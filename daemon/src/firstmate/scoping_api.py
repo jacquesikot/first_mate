@@ -40,6 +40,13 @@ class ScopingChat:
     goal: str
     repo: str
     dir: str
+    # Where the conversation actually reads. The task's worktree exists from
+    # the moment scoping starts, so the assistant sees the clean starting
+    # point the operator chose rather than whatever their repo checkout
+    # happens to hold. `repo` stays the canonical path the contract names.
+    workdir: str = ""
+    base: str = ""       # the committish the worktree started from
+    base_sha: str = ""   # what that resolved to, pinned for the record
     status: str = "thinking"
     session_id: str | None = None  # latest transcript id to --resume
     model: str | None = None
@@ -68,7 +75,9 @@ class ScopingChat:
 
 def start_chat(home: Path, goal: str, repo: Path,
                model: str | None = None,
-               task_id: str | None = None) -> ScopingChat:
+               task_id: str | None = None,
+               workdir: Path | None = None,
+               base: str = "", base_sha: str = "") -> ScopingChat:
     chat_dir = home / "scoping" / f"{slugify(goal)}-{uuid.uuid4().hex[:6]}"
     chat_dir.mkdir(parents=True, exist_ok=True)
     memory = None
@@ -78,10 +87,12 @@ def start_chat(home: Path, goal: str, repo: Path,
     prompt = scoping.build_prompt(
         goal, repo, chat_dir / "contract.json", memory,
         finalize=scoping.BROWSER_FINALIZE,
+        workdir=workdir, base=base,
     )
     (chat_dir / "prompt.md").write_text(prompt)
     chat = ScopingChat(
         id=new_id("scope"), goal=goal, repo=str(repo), dir=str(chat_dir),
+        workdir=str(workdir) if workdir else "", base=base, base_sha=base_sha,
         model=model, task_id=task_id,
     )
     chat.save()
@@ -159,7 +170,7 @@ def run_turn_subprocess(chat: ScopingChat, text: str) -> tuple[str, str | None]:
     if fm_dir:  # the session self-checks with `fm contract check`
         env["PATH"] = f"{fm_dir}:{env.get('PATH', '')}"
     proc = subprocess.run(
-        _turn_command(chat, text), cwd=chat.repo,
+        _turn_command(chat, text), cwd=(chat.workdir or chat.repo),
         capture_output=True, text=True, timeout=TURN_TIMEOUT_S, env=env,
     )
     if proc.returncode != 0:

@@ -35,7 +35,12 @@ def worktree_path(repo: Path, branch: str) -> Path:
 
 
 def create_worktree(repo: Path, branch: str, base: str = "HEAD") -> Path:
-    """Create (or reuse) a worktree for `branch`, branching off `base`."""
+    """Create (or reuse) a worktree for `branch`, branching off `base`.
+
+    `base` is any committish — a local branch, a remote-tracking ref like
+    `origin/main`, a tag, or a SHA. The task's branch is always its own; the
+    base only decides where it starts, so the operator's own branches are
+    never moved (see STATUS.md decision log)."""
     path = worktree_path(repo, branch)
     if path.exists():
         return path
@@ -51,6 +56,117 @@ def create_worktree(repo: Path, branch: str, base: str = "HEAD") -> Path:
     return path
 
 
+# --------------------------------------------------------- starting points
+
+
+def has_remote(repo: Path, name: str = "origin") -> bool:
+    out = _git(repo, "remote", check=False).stdout
+    return name in out.split()
+
+
+def fetch(repo: Path, remote: str = "origin", timeout: int = 60) -> str | None:
+    """`git fetch --prune`. Returns None on success, else a short reason.
+
+    Read-only with respect to the working tree — it only updates
+    remote-tracking refs, so it is safe to run against a dirty repo."""
+    if not has_remote(repo, remote):
+        return "no remote configured"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "fetch", "--prune", "--quiet", remote],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"fetch timed out after {timeout}s"
+    except OSError as e:
+        return str(e)
+    if proc.returncode != 0:
+        return (proc.stderr.strip() or "fetch failed").splitlines()[-1][:200]
+    return None
+
+
+def default_branch(repo: Path, remote: str = "origin") -> str | None:
+    """The remote's default branch (`origin/main`, `origin/master`, …).
+
+    `origin/HEAD` is only set by `git clone`, so it is often missing in
+    repos created another way; fall back to asking the remote, then to the
+    conventional names."""
+    ref = _git(repo, "symbolic-ref", "--quiet", f"refs/remotes/{remote}/HEAD",
+               check=False).stdout.strip()
+    if ref:
+        return ref.removeprefix("refs/remotes/")
+    head = _git(repo, "ls-remote", "--symref", remote, "HEAD",
+                check=False).stdout
+    for line in head.splitlines():
+        if line.startswith("ref:"):
+            name = line.split()[1].removeprefix("refs/heads/")
+            return f"{remote}/{name}"
+    for name in ("main", "master", "trunk", "develop"):
+        if _git(repo, "rev-parse", "--verify", "--quiet",
+                f"refs/remotes/{remote}/{name}", check=False).returncode == 0:
+            return f"{remote}/{name}"
+    return None
+
+
+def current_branch(repo: Path) -> str | None:
+    """The checked-out branch, or None when detached."""
+    name = _git(repo, "rev-parse", "--abbrev-ref", "HEAD",
+                check=False).stdout.strip()
+    return None if name in ("", "HEAD") else name
+
+
+def is_dirty(repo: Path) -> bool:
+    return bool(_git(repo, "status", "--porcelain", check=False).stdout.strip())
+
+
+_REF_FORMAT = "%(refname:short)%09%(objectname)%09%(committerdate:iso8601)%09%(upstream:short)%09%(upstream:track)%09%(subject)"
+
+
+def list_refs(repo: Path, limit: int = 60) -> list[dict]:
+    """Local branches and remote-tracking branches, newest commit first.
+
+    Each entry carries what the operator needs to choose a starting point
+    knowingly: how old the tip is, and how it relates to its upstream."""
+    out = _git(repo, "for-each-ref", f"--format={_REF_FORMAT}",
+               "--sort=-committerdate", f"--count={limit}",
+               "refs/heads", "refs/remotes", check=False).stdout
+    remotes = set(_git(repo, "remote", check=False).stdout.split())
+    refs: list[dict] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 6:
+            continue
+        name, sha, date, upstream, track, subject = parts[:6]
+        if name.endswith("/HEAD"):  # origin/HEAD is an alias, not a choice
+            continue
+        ahead = behind = None
+        for token in track.strip("[]").split(", "):
+            if token.startswith("ahead "):
+                ahead = int(token.removeprefix("ahead "))
+            elif token.startswith("behind "):
+                behind = int(token.removeprefix("behind "))
+        refs.append({
+            "name": name,
+            "sha": sha[:10],
+            "committed_at": date,
+            "remote": name.split("/", 1)[0] in remotes,
+            "upstream": upstream or None,
+            "ahead": ahead,
+            "behind": behind,
+            "gone": "gone" in track,
+            "subject": subject[:120],
+        })
+    return refs
+
+
+def resolve_ref(repo: Path, ref: str) -> str | None:
+    """The commit a starting point names, or None if it doesn't resolve."""
+    proc = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}",
+                check=False)
+    sha = proc.stdout.strip()
+    return sha or None
+
+
 def remove_worktree(repo: Path, branch: str, force: bool = False) -> None:
     path = worktree_path(repo, branch)
     if not path.exists():
@@ -59,6 +175,13 @@ def remove_worktree(repo: Path, branch: str, force: bool = False) -> None:
     if force:
         args.append("--force")
     _git(repo, *args)
+
+
+def delete_branch(repo: Path, branch: str, force: bool = False) -> None:
+    """Delete a local branch. Quiet no-op if it doesn't exist or still has
+    unmerged commits (without `force`) — callers use this for cleanup, where
+    keeping a branch is always safer than losing it."""
+    _git(repo, "branch", "-D" if force else "-d", branch, check=False)
 
 
 def list_worktrees(repo: Path) -> list[Path]:

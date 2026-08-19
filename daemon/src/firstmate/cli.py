@@ -82,9 +82,40 @@ def cmd_serve(args) -> int:
     return 0
 
 
-def _submit_contract(contract: dict, run: bool, source: Path | None = None) -> int:
+def _head_or_none(repo: Path) -> str | None:
+    from .exec import gitops
     try:
-        resp = api("POST", "/tasks", {"contract": contract, "run": run})
+        return gitops.head_commit(repo)
+    except gitops.GitError:
+        return None
+
+
+def _resolve_base(repo: Path, requested: str | None,
+                  fetch: bool = True) -> tuple[str, str | None]:
+    """Decide the starting point for a task created from the terminal.
+
+    Mirrors the daemon: default to the remote's default branch (fetched
+    first, so "latest" means latest), and never silently inherit whatever
+    the operator happens to have checked out."""
+    from .exec import gitops
+
+    if fetch and gitops.has_remote(repo):
+        err = gitops.fetch(repo)
+        if err:
+            print(f"fm: fetch failed ({err}) — using local refs", file=sys.stderr)
+    base = requested or gitops.default_branch(repo) or ""
+    if not base:
+        return "", None
+    return base, gitops.resolve_ref(repo, base)
+
+
+def _submit_contract(contract: dict, run: bool, source: Path | None = None,
+                     base: str | None = None) -> int:
+    body = {"contract": contract, "run": run}
+    if base:
+        body["base"] = base
+    try:
+        resp = api("POST", "/tasks", body)
     except CliError as e:
         if source is not None:
             print(f"fm: {e}", file=sys.stderr)
@@ -95,6 +126,8 @@ def _submit_contract(contract: dict, run: bool, source: Path | None = None) -> i
     task = resp["task"]
     print(f"task created: {task['id']} (status {task['status']}"
           f"{', started' if resp.get('started') else ''})")
+    if task.get("base"):
+        print(f"starting from: {task['base']} ({task.get('base_sha', '')[:10]})")
     if not resp.get("started"):
         print(f"start it with: fm run {task['id']}")
     return 0
@@ -109,7 +142,8 @@ def cmd_task(args) -> int:
         if not path.exists():
             print(f"no such file: {path}", file=sys.stderr)
             return 2
-        return _submit_contract(json.loads(path.read_text()), args.run, source=path)
+        return _submit_contract(json.loads(path.read_text()), args.run,
+                                source=path, base=args.base)
 
     # `fm task "<goal>"` — interactive scoping conversation (PRD §6.1).
     from . import scoping
@@ -117,6 +151,11 @@ def cmd_task(args) -> int:
     goal = args.target if not args.contract else f"{args.target} {args.contract}"
     repo = scoping.repo_root(Path.cwd())
     home = fm_home()
+    base, base_sha = _resolve_base(repo, args.base, fetch=not args.no_fetch)
+    if base and base_sha is None:
+        print(f"fm: cannot resolve starting point '{base}' in {repo.name}",
+              file=sys.stderr)
+        return 2
     model = None
     cfg = home / "config.json"
     if cfg.exists():
@@ -126,8 +165,28 @@ def cmd_task(args) -> int:
             pass
     print(f"scoping '{goal}' in {repo} — an interactive Claude session is starting;")
     print("push back on its proposal until the contract is right, then approve.")
+    # This session reads your checkout, but the task will run from `base`.
+    # Say so when those differ, so nothing is scoped against code the worker
+    # will never see.
+    note = ""
+    if base:
+        print(f"task will start from: {base} ({(base_sha or '')[:10]})")
+        head = _head_or_none(repo)
+        if head and base_sha and head != base_sha:
+            drift = (f"NOTE: this conversation reads the operator's checkout, which is NOT "
+                     f"the task's starting point.\n"
+                     f"    Their checkout: {head[:10]}\n"
+                     f"    Task starts at: {base} ({base_sha[:10]})\n"
+                     f"Scope against what {base} contains; if you need to know how they "
+                     f"differ, ask, or inspect with `git diff {base_sha[:10]}..HEAD`.\n")
+            note = "\n" + drift
+            print(f"warning: your checkout ({head[:10]}) differs from {base} "
+                  f"({base_sha[:10]}) — scoping reads your checkout;")
+            print("         the worker will run from the starting point. "
+                  "Consider --from HEAD, or run this from a clean tree.")
     try:
-        result = scoping.run_scoping(goal, repo, home, model=model)
+        result = scoping.run_scoping(goal, repo, home, model=model,
+                                     checkout_note=note)
     except FileNotFoundError:
         print("fm: `claude` not found on PATH — install Claude Code first.",
               file=sys.stderr)
@@ -139,7 +198,8 @@ def cmd_task(args) -> int:
             print(f"fix the contract at {result.contract_path} and submit with:")
             print(f"  fm task add {result.contract_path}")
         return 1
-    return _submit_contract(result.contract, args.run, source=result.contract_path)
+    return _submit_contract(result.contract, args.run,
+                            source=result.contract_path, base=base or None)
 
 
 def cmd_contract(args) -> int:
@@ -373,6 +433,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("target", help="a goal string, or 'add'")
     sp.add_argument("contract", nargs="?", help="path to contract JSON (with 'add')")
     sp.add_argument("--run", action="store_true", help="start immediately")
+    sp.add_argument(
+        "--from", dest="base", default=None, metavar="REF",
+        help="starting point for the task's worktree — a branch, tag, or "
+             "commit (default: the remote's default branch, freshly fetched, "
+             "so a task never inherits your working tree by accident)")
+    sp.add_argument(
+        "--no-fetch", action="store_true",
+        help="skip the git fetch before resolving --from")
     sp.set_defaults(func=cmd_task)
 
     sp = sub.add_parser("contract", help="contract utilities")

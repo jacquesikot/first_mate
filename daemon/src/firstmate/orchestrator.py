@@ -139,7 +139,13 @@ class TaskRunner:
             await self._set_status(task, "blocked")
             return
 
-        worktree = gitops.create_worktree(Path(task.repo), task.branch)
+        # Idempotent: the worktree normally already exists (created when the
+        # task was scoped, at the operator's chosen starting point). The
+        # pinned base_sha is what a task created another way branches from,
+        # so a run days later starts where the operator decided, not at
+        # whatever HEAD has become.
+        worktree = gitops.create_worktree(
+            Path(task.repo), task.branch, task.base_sha or "HEAD")
         if task.worktree != str(worktree):
             task.worktree = str(worktree)
         await self._set_status(task, "running")

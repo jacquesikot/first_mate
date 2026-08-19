@@ -192,3 +192,89 @@ def test_is_review_noise():
     for clean in ["src/app.py", "README.md", "fm_helper.py", "a/fmx/b.py",
                   "docs/.fmrc"]:
         assert not gitops.is_review_noise(clean), clean
+
+
+def _commit(repo, msg, **files):
+    from firstmate.exec import gitops
+    for name, text in files.items():
+        (repo / name.replace("__", ".")).write_text(text)
+    gitops._git(repo, "add", "-A")
+    gitops._git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-qm", msg)
+    return gitops.head_commit(repo)
+
+
+def test_starting_point_helpers(tmp_path):
+    """What the New-task picker needs: which refs exist, how fresh, and how
+    they relate to their upstream."""
+    from firstmate.exec import gitops
+
+    origin = tmp_path / "origin"
+    gitops.init_repo(origin)
+    _commit(origin, "one", f__txt="1\n")
+    clone = tmp_path / "clone"
+    gitops._git(tmp_path, "clone", "-q", str(origin), str(clone))
+
+    assert gitops.has_remote(clone) is True
+    assert gitops.has_remote(origin) is False
+    assert gitops.default_branch(clone) in ("origin/main", "origin/master")
+    assert gitops.default_branch(origin) is None
+    assert gitops.current_branch(clone) in ("main", "master")
+    assert gitops.is_dirty(clone) is False
+
+    # The remote moves on; the clone doesn't know until it fetches.
+    newest = _commit(origin, "two", f__txt="2\n")
+    stale = {r["name"]: r for r in gitops.list_refs(clone)}
+    remote_default = gitops.default_branch(clone)
+    assert stale[remote_default]["sha"] != newest[:10]
+    assert gitops.fetch(clone) is None
+    fresh = {r["name"]: r for r in gitops.list_refs(clone)}
+    assert fresh[remote_default]["sha"] == newest[:10]
+
+    # ...and the local branch is now reported behind it.
+    local = gitops.current_branch(clone)
+    assert fresh[local]["behind"] == 1
+    assert fresh[local]["upstream"] == remote_default
+    assert fresh[local]["remote"] is False
+    assert fresh[remote_default]["remote"] is True
+    # origin/HEAD is an alias, never offered as a choice
+    assert not any(name.endswith("/HEAD") for name in fresh)
+
+    (clone / "f.txt").write_text("dirty\n")
+    assert gitops.is_dirty(clone) is True
+
+    assert gitops.resolve_ref(clone, remote_default) == newest
+    assert gitops.resolve_ref(clone, "nope") is None
+    # fetch against a repo with no remote is reported, not raised
+    assert gitops.fetch(origin) == "no remote configured"
+
+
+def test_worktree_starts_at_given_base(tmp_path):
+    """A task's worktree is cut from the chosen point, so the operator's
+    uncommitted work never leaks into it."""
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "wt"
+    gitops.init_repo(repo)
+    first = _commit(repo, "one", f__txt="one\n")
+    _commit(repo, "two", f__txt="two\n")
+    (repo / "f.txt").write_text("uncommitted mess\n")
+    (repo / "untracked.txt").write_text("also mess\n")
+
+    older = gitops.create_worktree(repo, "fm/from-first", first)
+    assert (older / "f.txt").read_text() == "one\n"
+    assert not (older / "untracked.txt").exists()
+    assert gitops.head_commit(older) == first
+    assert gitops.changed_files(older) == []
+
+    # Idempotent: a second call reuses it rather than re-cutting.
+    assert gitops.create_worktree(repo, "fm/from-first", "HEAD") == older
+    assert gitops.head_commit(older) == first
+
+    gitops.remove_worktree(repo, "fm/from-first")
+    assert not older.exists()
+    gitops.delete_branch(repo, "fm/from-first", force=True)
+    branches = gitops._git(repo, "branch", "--format=%(refname:short)").stdout.split()
+    assert "fm/from-first" not in branches
+    # deleting a branch that isn't there is a quiet no-op
+    gitops.delete_branch(repo, "fm/never-existed")

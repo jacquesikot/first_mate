@@ -55,7 +55,7 @@ Goal as stated by the operator:
 {goal}
 
 Repository: {repo}
-
+{workdir_note}
 ## How to run this conversation
 
 1. Explore first, ask second. Read the repo (Read/Glob/Grep) and the \
@@ -129,11 +129,32 @@ BROWSER_FINALIZE = ("The operator reviews and approves the contract in the "
                     "it is ready for approval.")
 
 
+WORKDIR_NOTE = """
+You are reading the task's own git worktree, already checked out at the \
+starting point the operator chose:
+
+    Working directory: {workdir}
+    Started from:      {base}
+
+This is a clean checkout of that starting point — NOT the operator's own \
+checkout, so nothing you see here is their uncommitted work in progress. \
+Read here, and write the `repo` field of the contract as the repository \
+path given above (not this worktree path); First Mate resolves the \
+worktree itself when it runs the task.
+"""
+
+
 def build_prompt(goal: str, repo: Path, contract_path: Path,
-                 memory: str | None, finalize: str = TERMINAL_FINALIZE) -> str:
+                 memory: str | None, finalize: str = TERMINAL_FINALIZE,
+                 workdir: Path | None = None, base: str = "",
+                 checkout_note: str = "") -> str:
     return SCOPING_PROMPT.format(
         goal=goal,
         repo=repo,
+        workdir_note=(
+            WORKDIR_NOTE.format(workdir=workdir, base=base or "HEAD")
+            if workdir else checkout_note
+        ),
         contract_path=contract_path,
         finalize=finalize,
         schema=CONTRACT_SCHEMA_EXAMPLE.replace(
@@ -166,7 +187,8 @@ def build_command(prompt: str, scoping_dir: Path, model: str | None = None) -> l
 
 
 def run_scoping(goal: str, repo: Path, home: Path,
-                model: str | None = None) -> ScopingResult:
+                model: str | None = None,
+                checkout_note: str = "") -> ScopingResult:
     """Run the interactive scoping session; returns the contract (or the
     reasons there isn't one). Raises FileNotFoundError if claude is absent."""
     from .models import validate_contract
@@ -178,7 +200,12 @@ def run_scoping(goal: str, repo: Path, home: Path,
     mem_file = home / "memory" / f"{repo.name}.md"
     if mem_file.exists():
         memory = mem_file.read_text()
-    prompt = build_prompt(goal, repo, contract_path, memory)
+    # No worktree here: the terminal flow has no task id yet (see the
+    # STATUS.md decision log on why it stays contract-first), so the session
+    # reads the operator's own checkout. The prompt says so explicitly, and
+    # the CLI warns when that checkout isn't the chosen starting point.
+    prompt = build_prompt(goal, repo, contract_path, memory,
+                          checkout_note=checkout_note)
     (scoping_dir / "prompt.md").write_text(prompt)
 
     subprocess.run(build_command(prompt, scoping_dir, model), cwd=repo)

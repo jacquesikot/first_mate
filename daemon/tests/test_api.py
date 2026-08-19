@@ -319,6 +319,186 @@ def test_scoping_chat_flow(client, tmp_path, monkeypatch):
     assert reloaded is not None and reloaded.status == "approved"
 
 
+def test_fs_refs_ranks_starting_points(client, tmp_path):
+    """The picker's data: what can I start from, and how fresh is it."""
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "refsrepo"
+    gitops.init_repo(repo)
+    (repo / "f.txt").write_text("x\n")
+    gitops._git(repo, "add", "f.txt")
+    gitops._git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-qm", "one")
+    gitops._git(repo, "branch", "feature/side")
+
+    # No remote: fetch is skipped, not an error, and the recommendation
+    # falls back to the checked-out branch.
+    r = client.get("/fs/refs", params={"repo": str(repo)})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["fetched"] is False and d["fetch_error"] is None
+    assert d["default_branch"] is None
+    assert d["current_branch"] == d["recommended"]
+    assert d["dirty"] is False
+    names = [x["name"] for x in d["refs"]]
+    assert set(names) == {d["current_branch"], "feature/side"}
+    # the checked-out branch is ranked first and labelled
+    assert d["refs"][0]["role"] == "current"
+    assert all(x["remote"] is False for x in d["refs"])
+
+    # A dirty tree is reported, so the UI can say why "current branch" may
+    # not be what the operator expects.
+    (repo / "f.txt").write_text("dirty\n")
+    assert client.get("/fs/refs", params={"repo": str(repo)}).json()["dirty"] is True
+
+    # First Mate's own task branches are outputs, not starting points, so
+    # they don't accumulate in the picker.
+    gitops._git(repo, "branch", "fm/some-old-task")
+    names = [x["name"] for x in
+             client.get("/fs/refs", params={"repo": str(repo)}).json()["refs"]]
+    assert "fm/some-old-task" not in names
+    assert "feature/side" in names
+
+    r = client.get("/fs/refs", params={"repo": str(tmp_path / "nope")})
+    assert r.status_code == 400
+
+
+def test_fs_refs_prefers_remote_default(client, tmp_path, monkeypatch):
+    """With a remote, `origin/<default>` is the recommendation — the
+    "I usually pull latest from origin/main" case."""
+    from firstmate.exec import gitops
+
+    origin = tmp_path / "origin"
+    gitops.init_repo(origin)
+    (origin / "f.txt").write_text("x\n")
+    gitops._git(origin, "add", "f.txt")
+    gitops._git(origin, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-qm", "one")
+    clone = tmp_path / "clone"
+    gitops._git(tmp_path, "clone", "-q", str(origin), str(clone))
+
+    d = client.get("/fs/refs", params={"repo": str(clone)}).json()
+    assert d["fetched"] is True, d["fetch_error"]
+    assert d["default_branch"] == d["recommended"]
+    assert d["default_branch"].startswith("origin/")
+    assert d["refs"][0]["role"] == "default"
+    # ...and starting a task with no explicit base uses exactly that.
+    from firstmate import scoping_api
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        lambda chat, text: ("proposal", "sid-1"))
+    body = client.post("/scoping", json={"goal": "g", "repo": str(clone)}).json()
+    assert body["task"]["base"] == d["default_branch"]
+    assert body["chat"]["base"] == d["default_branch"]
+    # the worktree starts at the remote tip, not at the local checkout
+    assert body["task"]["base_sha"] == gitops.resolve_ref(clone, d["default_branch"])
+
+
+def test_scoping_creates_worktree_at_chosen_base(client, tmp_path, monkeypatch):
+    """Every task declares its starting point up front; the worktree exists
+    from the moment scoping starts so the conversation reads that clean
+    checkout, not the operator's (possibly mid-work) tree."""
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "baserepo"
+    gitops.init_repo(repo)
+    (repo / "a.txt").write_text("first\n")
+    gitops._git(repo, "add", "a.txt")
+    gitops._git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-qm", "first")
+    first = gitops.head_commit(repo)
+    # A second commit, plus a branch pointing at the first, so "start from
+    # the older branch" is distinguishable from "start from HEAD".
+    gitops._git(repo, "branch", "older", first)
+    (repo / "a.txt").write_text("second\n")
+    gitops._git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                "commit", "-aqm", "second")
+    # ...and uncommitted mess in the operator's checkout, which must not
+    # leak into the task's worktree.
+    (repo / "messy.txt").write_text("work in progress\n")
+
+    seen = {}
+
+    def runner(chat, text):
+        seen["cwd"] = chat.workdir
+        return "proposal", "sid-1"
+
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess", runner)
+
+    body = client.post("/scoping", json={"goal": "from older",
+                                        "repo": str(repo),
+                                        "base": "older"}).json()
+    task, chat = body["task"], body["chat"]
+    assert task["base"] == "older"
+    assert task["base_sha"] == first
+    wt = Path(task["worktree"])
+    assert wt.is_dir(), "worktree should exist as soon as scoping starts"
+    # The worktree holds the chosen starting point...
+    assert (wt / "a.txt").read_text() == "first\n"
+    # ...and none of the operator's uncommitted mess.
+    assert not (wt / "messy.txt").exists()
+    # The conversation reads the worktree, not the repo.
+    _await_chat(client, chat["id"], {"awaiting_operator"})
+    assert seen["cwd"] == str(wt)
+    assert client.get(f"/tasks/{task['id']}").json()["scoping"]["base"] == "older"
+
+
+def test_scoping_rejects_unresolvable_base(client, tmp_path):
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "badbase"
+    gitops.init_repo(repo)
+    r = client.post("/scoping", json={"goal": "g", "repo": str(repo),
+                                      "base": "no-such-branch"})
+    assert r.status_code == 400
+    assert "no-such-branch" in r.text
+    # nothing half-created
+    assert client.get("/tasks").json()["tasks"] == []
+
+
+def test_scoping_abandon_discards_untouched_worktree(client, tmp_path, monkeypatch):
+    """An abandoned conversation shouldn't litter a worktree and a branch."""
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "cleanup"
+    gitops.init_repo(repo)
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        lambda chat, text: ("proposal", "sid-1"))
+    body = client.post("/scoping", json={"goal": "drop me",
+                                         "repo": str(repo)}).json()
+    tid, cid = body["task"]["id"], body["chat"]["id"]
+    wt = Path(body["task"]["worktree"])
+    branch = body["task"]["branch"]
+    assert wt.is_dir()
+    _await_chat(client, cid, {"awaiting_operator"})
+
+    client.post(f"/scoping/{cid}/abandon")
+    assert not wt.exists(), "clean worktree should be removed"
+    assert branch not in gitops._git(repo, "branch", "--format=%(refname:short)").stdout.split()
+    assert client.get(f"/tasks/{tid}").json()["task"]["status"] == "abandoned"
+
+
+def test_scoping_abandon_keeps_worktree_with_work_in_it(client, tmp_path, monkeypatch):
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "keepwork"
+    gitops.init_repo(repo)
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess",
+                        lambda chat, text: ("proposal", "sid-1"))
+    body = client.post("/scoping", json={"goal": "keep me",
+                                         "repo": str(repo)}).json()
+    tid = body["task"]["id"]
+    wt = Path(body["task"]["worktree"])
+    _await_chat(client, body["chat"]["id"], {"awaiting_operator"})
+    (wt / "someones-work.txt").write_text("do not delete me\n")
+
+    client.post(f"/tasks/{tid}/abandon")
+    assert wt.is_dir(), "a worktree holding work must survive an abandon"
+    assert (wt / "someones-work.txt").exists()
+
+
 def test_scoping_abandon_abandons_its_task(client, tmp_path, monkeypatch):
     from firstmate import scoping_api
     from firstmate.exec import gitops

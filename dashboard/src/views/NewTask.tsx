@@ -3,6 +3,7 @@ import type { BrowseInfo, RepoSuggestion } from "../api";
 import { api } from "../api";
 import { useApp, SectionHead } from "../components";
 import { splitPath } from "../format";
+import { StartPoint } from "./StartPoint";
 
 const TEMPLATE = `{
   "goal": "…what done means, in one sentence…",
@@ -23,6 +24,7 @@ export function NewTaskView() {
   const { toast, go, refresh } = useApp();
   const [goal, setGoal] = useState("");
   const [repo, setRepo] = useState("");
+  const [base, setBase] = useState("");
   const [suggestions, setSuggestions] = useState<RepoSuggestion[]>([]);
   const [browsing, setBrowsing] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -32,13 +34,18 @@ export function NewTaskView() {
     api.repos().then((d) => setSuggestions(d.repos)).catch(() => {});
   }, []);
 
+  const pickRepo = (path: string) => {
+    setRepo(path);
+    setBase(""); // StartPoint re-reads and re-recommends for the new repo
+  };
+
   const start = async () => {
-    if (!goal.trim() || !repo.trim() || starting) return;
+    if (!goal.trim() || !repo.trim() || !base || starting) return;
     setStarting(true);
     try {
-      const r = await api.scopeStart(goal.trim(), repo.trim());
+      const r = await api.scopeStart(goal.trim(), repo.trim(), base);
       refresh();
-      toast(`Session opened · ${r.task.id}`, "scoping — reading the repo", "run");
+      toast(`Session opened · ${r.task.id}`, `worktree cut from ${base}`, "run");
       go(`#/task/${r.task.id}`);
     } catch (e) {
       toast("Could not start the session", String(e), "bad");
@@ -51,9 +58,10 @@ export function NewTaskView() {
   return (
     <div className="page narrow" style={{ gap: 16 }}>
       <div style={{ fontSize: 13, color: "var(--tx2)", lineHeight: 1.6, maxWidth: "68ch" }}>
-        Pick the repository the task builds on and say what you want done. First Mate opens a
-        session straight away, reads the repo and project memory, then proposes a scope, steps,
-        and machine-checkable completion criteria for you to push back on — in the session.
+        Pick the repository, choose where the work starts from, and say what you want done.
+        First Mate cuts a fresh worktree at that starting point, opens a session, reads the
+        code and project memory there, then proposes a scope, steps, and machine-checkable
+        completion criteria for you to push back on — in the session.
       </div>
 
       <div
@@ -112,7 +120,7 @@ export function NewTaskView() {
                     background: repo === s.path ? "var(--acbg)" : "transparent",
                     color: repo === s.path ? "var(--ac)" : "var(--tx2)",
                   }}
-                  onClick={() => setRepo(s.path)}
+                  onClick={() => pickRepo(s.path)}
                 >
                   {s.name}
                   {s.source === "recent" && (
@@ -123,6 +131,8 @@ export function NewTaskView() {
             </div>
           )}
         </div>
+
+        {repo && <StartPoint repo={repo} value={base} onChange={setBase} />}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
           <span className="label">task</span>
@@ -142,13 +152,13 @@ export function NewTaskView() {
           <button
             className="btn accent"
             style={{ padding: "9px 16px", fontSize: 13 }}
-            disabled={!goal.trim() || !repo.trim() || starting}
+            disabled={!goal.trim() || !repo.trim() || !base || starting}
             onClick={start}
           >
             {starting ? "Opening session…" : "Start scoping"}
           </button>
           <span className="mono" style={{ fontSize: 10.5, color: "var(--tx4)" }}>
-            opens a session · reads memory + repo first · ⌘↵
+            {base ? `worktree from ${base} · ⌘↵` : "choose a starting point · ⌘↵"}
           </span>
         </div>
       </div>
@@ -167,7 +177,7 @@ export function NewTaskView() {
       {browsing && (
         <BrowseModal
           onPick={(p) => {
-            setRepo(p);
+            pickRepo(p);
             setBrowsing(false);
           }}
           onClose={() => setBrowsing(false)}

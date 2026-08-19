@@ -1044,6 +1044,12 @@ function Sidebar({ detail, ctxOverride }: { detail: TaskDetail; ctxOverride: Tas
         <div style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
           <Meta k="state" v={task.status} color={statusColor(task.status)} sub={task.current_step ?? undefined} />
           <Meta
+            k="started from"
+            v={task.base || "HEAD"}
+            color="var(--tx2)"
+            sub={task.base_sha ? task.base_sha.slice(0, 10) : undefined}
+          />
+          <Meta
             k="sessions"
             v={`${totalSessions} total${liveSession ? ` · gen ${liveSession.generation} live` : ""}`}
             color="var(--tx)"
@@ -1073,8 +1079,13 @@ function Sidebar({ detail, ctxOverride }: { detail: TaskDetail; ctxOverride: Tas
         <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.6, wordBreak: "break-all", color: "var(--tx2)" }}>
           {task.worktree || "(created on first run)"}
         </div>
-        <div className="mono" style={{ display: "flex", gap: 14, fontSize: 10.5, color: "var(--tx4)" }}>
-          <span>{task.branch}</span>
+        <div
+          className="mono"
+          style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 10.5, color: "var(--tx4)" }}
+        >
+          <span>{task.base || "HEAD"}</span>
+          <span>→</span>
+          <span style={{ color: "var(--tx3)" }}>{task.branch}</span>
         </div>
       </div>
     </div>
@@ -1107,7 +1118,13 @@ function ScopingSidebar({ detail }: { detail: TaskDetail }) {
         <div style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 12 }}>
           <Meta k="state" v="scoping" color="var(--ac)" sub="agreeing what done means" />
           <Meta k="repository" v={splitPath(task.repo).name} color="var(--tx)" sub={task.repo} />
-          <Meta k="branch on approval" v={task.branch} color="var(--tx2)" />
+          <Meta
+            k="started from"
+            v={task.base || "HEAD"}
+            color="var(--ac)"
+            sub={task.base_sha ? task.base_sha.slice(0, 10) : undefined}
+          />
+          <Meta k="branch" v={task.branch} color="var(--tx2)" sub="cut, nothing committed yet" />
           {scoping?.model && <Meta k="model" v={scoping.model} color="var(--tx2)" />}
         </div>
       </div>
@@ -1119,10 +1136,31 @@ function ScopingSidebar({ detail }: { detail: TaskDetail }) {
           what happens next
         </span>
         <div style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--tx2)" }}>
-          Approving the contract creates the worktree, spawns the first worker, and validates
-          every criterion mechanically. Nothing runs until you approve.
+          The worktree is already cut from{" "}
+          <span className="mono" style={{ color: "var(--ac)", fontSize: 11.5 }}>
+            {task.base || "HEAD"}
+          </span>
+          , so this conversation is reading that starting point — not your working copy.
+          Approving the contract spawns the first worker there and validates every criterion
+          mechanically. Nothing runs until you approve.
         </div>
       </div>
+      {task.worktree && (
+        <div
+          className="card-flat"
+          style={{ padding: "13px 14px", display: "flex", flexDirection: "column", gap: 9 }}
+        >
+          <span className="label" style={{ color: "var(--tx3)" }}>
+            worktree
+          </span>
+          <div
+            className="mono"
+            style={{ fontSize: 11.5, lineHeight: 1.6, wordBreak: "break-all", color: "var(--tx2)" }}
+          >
+            {task.worktree}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -275,6 +275,11 @@ class Task:
     status: str = "ready"
     worktree: str = ""
     goal: str = ""
+    # The starting point this task branched from, chosen by the operator when
+    # the task was created and pinned to a SHA so a later run can't silently
+    # start somewhere else.
+    base: str = ""
+    base_sha: str = ""
     current_step: str | None = None
     # Set while status == "scoping": the conversation that will produce
     # this task's contract. The task exists from the first keystroke so

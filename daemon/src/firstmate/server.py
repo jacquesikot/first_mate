@@ -253,6 +253,24 @@ def create_app(store: Store | None = None, autostart: bool = True,
             raise HTTPException(404, f"unknown task: {task_id}")
         return task
 
+    def discard_unused_worktree(task) -> None:
+        """Remove a task's worktree + branch if nothing ever happened in it.
+        Blocking (git); call from a thread. Cleanup must never fail an
+        abandon, and anything that looks like work is left alone."""
+        if not task.worktree or not Path(task.worktree).is_dir():
+            return
+        wt = Path(task.worktree)
+        try:
+            if gitops.changed_files(wt):
+                return  # uncommitted work here — keep it for the operator
+            if task.base_sha and gitops.head_commit(wt) != task.base_sha:
+                return  # commits were made on the task branch — keep them
+            gitops.remove_worktree(Path(task.repo), task.branch)
+            gitops.delete_branch(Path(task.repo), task.branch)
+            task.worktree = ""
+        except gitops.GitError:
+            return
+
     def live_attach(task) -> str | None:
         for st in task.steps:
             for rec in st.sessions:
@@ -297,7 +315,8 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def list_tasks():
         return {"tasks": store.list_tasks()}
 
-    async def create_task_from_contract(data: dict | None, run: bool):
+    async def create_task_from_contract(data: dict | None, run: bool,
+                                        base: str = ""):
         """Shared gate for POST /tasks and scoping approval."""
         errors = validate_contract(data or {})
         repo = str((data or {}).get("repo", ""))
@@ -307,9 +326,36 @@ def create_app(store: Store | None = None, autostart: bool = True,
             raise HTTPException(400, {"errors": errors})
         contract = Contract.from_dict(data)
         contract.repo = str(Path(contract.repo).expanduser().resolve())
+        rp = Path(contract.repo)
+        # Same starting-point rule as the scoping flow: default to the remote
+        # default branch rather than whatever the operator has checked out.
+        explicit = bool(base)
+        if not base:
+            # Fetch before defaulting, or "the remote default branch" would
+            # mean whatever the last fetch happened to leave behind. Only on
+            # the implicit path — an explicit ref is taken at face value, so
+            # a caller that wants no network can name one.
+            if await asyncio.to_thread(gitops.has_remote, rp):
+                await asyncio.to_thread(gitops.fetch, rp)
+            base = await asyncio.to_thread(gitops.default_branch, rp) or "HEAD"
+        base_sha = await asyncio.to_thread(gitops.resolve_ref, rp, base)
+        if base_sha is None:
+            # An explicit choice that doesn't resolve is an error; an
+            # unresolvable *default* just means there is nothing to resolve
+            # yet (a repo with no commits), so let the task be created and
+            # let git report it at run time.
+            if explicit:
+                raise HTTPException(
+                    400, {"errors": [f"cannot resolve starting point '{base}'"]})
+            base = ""
         task = store.create_task(contract)
+        task.base = base
+        task.base_sha = base_sha or ""
+        store.save_task(task)
         started = manager.start(task.id) if run else False
-        evt = store.append_event(task.id, "task_ready", data={"started": started})
+        evt = store.append_event(task.id, "task_ready",
+                                 data={"started": started, "base": base,
+                                       "base_sha": base_sha})
         await manager.broadcast(evt)
         return task, started
 
@@ -317,7 +363,8 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def create_task(request: Request):
         body = await request.json()
         task, started = await create_task_from_contract(
-            body.get("contract"), bool(body.get("run")))
+            body.get("contract"), bool(body.get("run")),
+            base=str(body.get("base", "")).strip())
         return {"task": task.to_dict(), "started": started}
 
     @app.get("/tasks/{task_id}")
@@ -415,6 +462,11 @@ def create_app(store: Store | None = None, autostart: bool = True,
                 chat.save()
                 chats[chat.id] = chat
             task.scoping_chat_id = None
+            # The worktree was created when scoping started; nothing ever ran
+            # in it, so drop it rather than leaving a directory and a branch
+            # behind for every abandoned conversation. Kept if it holds
+            # anything at all.
+            await asyncio.to_thread(discard_unused_worktree, task)
         task.status = "abandoned"
         store.save_task(task)
         evt = store.append_event(task_id, "task_status", data={"status": "abandoned"})
@@ -526,6 +578,63 @@ def create_app(store: Store | None = None, autostart: bool = True,
                     add(child, "scan")
         return {"repos": out}
 
+    @app.get("/fs/refs")
+    async def fs_refs(repo: str, fetch: bool = True):
+        """Starting points for a new task, ranked, with freshness.
+
+        The picker's whole job is to let the operator start from a known
+        point instead of whatever their working tree happens to hold, so
+        this fetches first (remote-tracking refs only — never the working
+        tree) and reports what it found. A fetch failure is data, not an
+        error: the refs are still returned, labelled stale."""
+        rp = Path(repo).expanduser()
+        if not rp.is_dir() or not (rp / ".git").exists():
+            raise HTTPException(400, f"not a git repository: {repo}")
+        rp = rp.resolve()
+        fetch_error = None
+        fetched = False
+        if fetch and await asyncio.to_thread(gitops.has_remote, rp):
+            fetch_error = await asyncio.to_thread(gitops.fetch, rp)
+            fetched = fetch_error is None
+        default = await asyncio.to_thread(gitops.default_branch, rp)
+        current = await asyncio.to_thread(gitops.current_branch, rp)
+        dirty = await asyncio.to_thread(gitops.is_dirty, rp)
+        refs = await asyncio.to_thread(gitops.list_refs, rp)
+        # First Mate's own task branches are outputs, not starting points —
+        # they would otherwise pile up in the picker, one per task ever run.
+        # (Still reachable through the "other ref" field if genuinely wanted.)
+        refs = [r for r in refs
+                if not r["name"].startswith("fm/")
+                and "/fm/" not in r["name"]]
+        by_name = {r["name"]: r for r in refs}
+
+        # Rank: the remote default first (the "pull latest" case), then the
+        # branch they have checked out, then everything else by recency.
+        def rank(r: dict) -> tuple:
+            if r["name"] == default:
+                return (0,)
+            if r["name"] == current:
+                return (1,)
+            return (2, r["remote"])
+
+        ordered = sorted(refs, key=rank)
+        for r in ordered:
+            r["role"] = ("default" if r["name"] == default
+                         else "current" if r["name"] == current else None)
+        return {
+            "repo": str(rp),
+            "fetched": fetched,
+            "fetch_error": fetch_error,
+            "default_branch": default,
+            "current_branch": current,
+            "dirty": dirty,
+            # What we'd pick with no input — the answer to "I usually pull
+            # latest from origin/main".
+            "recommended": default or current or "HEAD",
+            "refs": ordered,
+            "current_ref": by_name.get(current or ""),
+        }
+
     @app.get("/fs/browse")
     async def fs_browse(path: str | None = None):
         """Directory listing for the picker's browse modal. The daemon is
@@ -633,6 +742,7 @@ def create_app(store: Store | None = None, autostart: bool = True,
         body = await request.json()
         goal = str(body.get("goal", "")).strip()
         repo = str(body.get("repo", "")).strip()
+        base = str(body.get("base", "")).strip()
         if not goal:
             raise HTTPException(400, "goal is required")
         rp = Path(repo).expanduser()
@@ -640,21 +750,54 @@ def create_app(store: Store | None = None, autostart: bool = True,
             raise HTTPException(400, f"repo path does not exist: {repo}")
         if not (rp / ".git").exists():
             raise HTTPException(400, f"not a git repository: {rp}")
+        rp = rp.resolve()
+        # Every task declares its starting point up front (the operator's own
+        # checkout may be mid-work); default to the remote default branch,
+        # which is the "pull latest from origin/main" case.
+        explicit = bool(base)
+        if not base:
+            # The browser passes an explicit base from the picker (which has
+            # already fetched); a caller that omits it still gets a truthful
+            # "latest".
+            if await asyncio.to_thread(gitops.has_remote, rp):
+                await asyncio.to_thread(gitops.fetch, rp)
+            base = await asyncio.to_thread(gitops.default_branch, rp) or "HEAD"
+        base_sha = await asyncio.to_thread(gitops.resolve_ref, rp, base)
+        if base_sha is None:
+            if explicit:
+                raise HTTPException(
+                    400, f"cannot resolve starting point '{base}' in {rp.name}")
+            base = ""  # repo with no commits — git decides at worktree time
+
         # Task-first: the session exists before the conversation does, so
         # scoping happens in a task view and shows up in the queue at once.
-        placeholder = Contract(goal=goal, repo=str(rp.resolve()))
+        placeholder = Contract(goal=goal, repo=str(rp))
         task = store.create_task(placeholder, status="scoping")
+        # The worktree exists from now on, so the scoping conversation reads
+        # the chosen starting point rather than the operator's working tree.
+        try:
+            worktree = await asyncio.to_thread(
+                gitops.create_worktree, rp, task.branch, base_sha or "HEAD")
+        except gitops.GitError as e:
+            task.status = "failed"
+            store.save_task(task)
+            raise HTTPException(500, f"could not create worktree: {e}")
+        task.worktree = str(worktree)
+        task.base = base
+        task.base_sha = base_sha or ""
         chat = scoping_api.start_chat(
-            store.home, goal, rp.resolve(),
+            store.home, goal, rp,
             model=manager.config.get("scoping_model"),
-            task_id=task.id,
+            task_id=task.id, workdir=worktree, base=base, base_sha=base_sha,
         )
         chat.save()
         chats[chat.id] = chat
         task.scoping_chat_id = chat.id
         store.save_task(task)
-        evt = store.append_event(task.id, "scoping_started",
-                                 data={"chat_id": chat.id})
+        evt = store.append_event(
+            task.id, "scoping_started",
+            data={"chat_id": chat.id, "base": base, "base_sha": base_sha,
+                  "worktree": str(worktree)})
         await manager.broadcast(evt)
         # The opening turn (assistant reads repo + memory, then proposes —
         # PRD §6.1, no questionnaire) runs in the background.
@@ -733,6 +876,7 @@ def create_app(store: Store | None = None, autostart: bool = True,
         if chat.task_id:
             task = store.load_task(chat.task_id)
             if task is not None and task.status == "scoping":
+                await asyncio.to_thread(discard_unused_worktree, task)
                 task.status = "abandoned"
                 task.scoping_chat_id = None
                 store.save_task(task)

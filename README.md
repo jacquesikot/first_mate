@@ -40,14 +40,28 @@ with validation evidence, contract render/edit between steps, changed files
 + diff viewer, live output, question history), **Inbox**, **Memory**
 (view/edit/append), **New task** (repo picker + goal).
 
-**Starting a task is task-first:** pick a repo, say what you want, and
-First Mate creates the session immediately (status `scoping`) and hands you
-its task view. The scoping conversation happens inside that session — it
-shows up in the queue from the first keystroke, survives a reload or a
-daemon restart, and approving its contract turns that same task into a
-running one. Assistant text (scoping replies, questions, handoff briefs)
-renders as markdown. Pasting a pre-written contract JSON remains a secondary
-path on the New task view.
+**Starting a task is task-first:** pick a repo, choose the starting point,
+say what you want, and First Mate cuts a worktree at that point and creates
+the session immediately (status `scoping`), then hands you its task view.
+The scoping conversation happens inside that session, reading the fresh
+worktree — it shows up in the queue from the first keystroke, survives a
+reload or a daemon restart, and approving its contract turns that same task
+into a running one. Assistant text (scoping replies, questions, handoff
+briefs) renders as markdown. Pasting a pre-written contract JSON remains a
+secondary path on the New task view.
+
+**Every task declares where it starts.** The starting-point picker runs a
+`git fetch --prune` when it opens (remote-tracking refs only — your working
+tree is never touched) and shows each candidate with its real freshness:
+the remote default branch first, then your checked-out branch, flagged if
+it is behind its upstream or has uncommitted changes, then recent branches,
+plus a field for any other branch/tag/commit. The default is
+`origin/<default branch>`, so "pull latest from main" is zero clicks. The
+chosen ref is pinned to a SHA on the task, so a run days later still starts
+where you decided. Starting point and destination stay separate: the task
+always commits to its own `fm/<task-id>` branch, so the branch you started
+from is never moved or dirtied. From the terminal:
+`fm task "<goal>" --from origin/main` (`--no-fetch` to skip the fetch).
 
 ## prototype/First Mate System Prototype.html
 

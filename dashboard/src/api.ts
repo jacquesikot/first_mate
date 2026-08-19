@@ -70,6 +70,9 @@ export interface Task {
   status: string;
   worktree: string;
   goal: string;
+  /** The starting point chosen when the task was created, pinned to a SHA. */
+  base: string;
+  base_sha: string;
   current_step: string | null;
   /** Set while status === "scoping" — the conversation producing the contract. */
   scoping_chat_id: string | null;
@@ -184,6 +187,33 @@ export interface RepoSuggestion {
   source: "recent" | "scan";
 }
 
+/** One candidate starting point for a new task. */
+export interface GitRef {
+  name: string;
+  sha: string;
+  committed_at: string;
+  remote: boolean;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  gone: boolean;
+  subject: string;
+  /** "default" = the remote's default branch, "current" = checked out here. */
+  role: "default" | "current" | null;
+}
+
+export interface RefsInfo {
+  repo: string;
+  fetched: boolean;
+  fetch_error: string | null;
+  default_branch: string | null;
+  current_branch: string | null;
+  dirty: boolean;
+  recommended: string;
+  refs: GitRef[];
+  current_ref: GitRef | null;
+}
+
 export interface BrowseDir {
   name: string;
   path: string;
@@ -208,6 +238,10 @@ export interface ScopingChat {
   goal: string;
   repo: string;
   dir: string;
+  /** The task worktree the conversation reads (the chosen starting point). */
+  workdir: string;
+  base: string;
+  base_sha: string;
   status:
     | "thinking"
     | "awaiting_operator"
@@ -289,8 +323,13 @@ export const api = {
   repos: () => req<{ repos: RepoSuggestion[] }>("GET", "/fs/repos"),
   browse: (path?: string) =>
     req<BrowseInfo>("GET", `/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
-  scopeStart: (goal: string, repo: string) =>
-    req<{ chat: ScopingChat; task: Task }>("POST", "/scoping", { goal, repo }),
+  refs: (repo: string, fetch = true) =>
+    req<RefsInfo>(
+      "GET",
+      `/fs/refs?repo=${encodeURIComponent(repo)}${fetch ? "" : "&fetch=false"}`
+    ),
+  scopeStart: (goal: string, repo: string, base: string) =>
+    req<{ chat: ScopingChat; task: Task }>("POST", "/scoping", { goal, repo, base }),
   scopeGet: (id: string) => req<{ chat: ScopingChat }>("GET", `/scoping/${id}`),
   scopeMessage: (id: string, text: string) =>
     req<{ chat: ScopingChat }>("POST", `/scoping/${id}/message`, { text }),
