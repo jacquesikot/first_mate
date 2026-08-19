@@ -1,0 +1,62 @@
+"""Worker hook generation and context-injection building."""
+
+import json
+
+from firstmate.models import Contract, Question
+from firstmate.workerfiles import build_inject, write_inject, write_worker_hooks
+
+CONTRACT = Contract.from_dict({
+    "goal": "wf test",
+    "repo": "/tmp/repo",
+    "steps": [{"id": "s1", "prompt": "do the thing", "criteria": ["c1"]}],
+    "criteria": [{"id": "c1", "command": "true"}],
+})
+
+
+def test_write_worker_hooks_bakes_values(tmp_path):
+    settings = write_worker_hooks(tmp_path, "task-1", "s1",
+                                  "http://127.0.0.1:9999", "/opt/bin/fm")
+    data = json.loads(settings.read_text())
+    assert set(data["hooks"]) == {"SessionStart", "PreCompact", "Stop"}
+    start = (tmp_path / ".fm" / "hooks" / "session_start.sh").read_text()
+    assert "/opt/bin/fm" in start
+    assert "--task task-1" in start
+    assert "--url http://127.0.0.1:9999" in start
+    assert "additionalContext" in start
+    compact = (tmp_path / ".fm" / "hooks" / "pre_compact.sh").read_text()
+    assert "exit 2" in compact
+
+
+def test_write_worker_hooks_regenerates_without_duplicates(tmp_path):
+    write_worker_hooks(tmp_path, "task-1", "s1", "http://a", "/bin/fm")
+    settings = write_worker_hooks(tmp_path, "task-1", "s2", "http://b", "/bin/fm")
+    data = json.loads(settings.read_text())
+    assert len(data["hooks"]["SessionStart"]) == 1
+    assert "--step s2" in (tmp_path / ".fm" / "hooks" / "stop.sh").read_text()
+
+
+def test_build_inject_sections():
+    q = Question(id="q1", task_id="t", type="decision", question="Which color?",
+                 status="answered", answer="red")
+    text = build_inject(
+        CONTRACT, CONTRACT.steps[0], generation=3, attempt=2,
+        memory="- lesson one", handoff="DONE: half of it",
+        answered=[q], retry_note="c1: exit 1",
+    )
+    for needle in ("generation 3, attempt 2", "wf test", "Project memory",
+                   "lesson one", "Which color?", "A: red",
+                   "DONE: half of it", "failed validation", "c1: exit 1"):
+        assert needle in text, f"missing: {needle}"
+
+
+def test_build_inject_minimal_omits_empty_sections():
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=1, attempt=1)
+    assert "Project memory" not in text
+    assert "Handoff" not in text
+    assert "Operator answers" not in text
+
+
+def test_write_inject(tmp_path):
+    path = write_inject(tmp_path, "hello\n")
+    assert path.read_text() == "hello\n"
+    assert path == tmp_path / ".fm" / "inject.md"

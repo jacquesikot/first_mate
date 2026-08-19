@@ -1,0 +1,341 @@
+"""State store — SQLite + plain human-readable files under ~/.firstmate.
+
+The JSON/markdown files are the source of truth (debuggable with cat and
+jq — acceptance criterion 10); SQLite is a rebuildable index for queries
+and is reindexed from the files on every Store construction, so deleting
+firstmate.db or hand-editing a task file is always safe. The daemon is
+the single writer; CLI fallbacks only read.
+
+Layout:
+  ~/.firstmate/                     (override with FM_HOME for tests/spikes)
+    config.json
+    daemon.json                     written by `fm serve` (url, pid)
+    firstmate.db                    index; safe to delete
+    memory/<project>.md             durable per-project memory
+    tasks/<task-id>/
+      task.json                     lifecycle + per-step runtime state
+      contract.json / contract.md
+      events.jsonl                  append-only task event log
+      questions/<qid>.json
+      steps/<step-id>/              inject/handoff per generation, validation evidence
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import uuid
+from pathlib import Path
+
+from .models import Contract, Question, StepState, Task, now_iso, slugify
+
+DEFAULT_CONFIG = {
+    "port": 8787,
+    "max_workers": 3,
+    "worker_model": "sonnet",
+    "handoff_model": None,  # null → the step's worker model
+    "wall_tokens": 150_000,
+    "max_generations": 8,
+    "worker_timeout_s": 3600,
+    "poll_seconds": 2.0,
+}
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY, status TEXT, repo TEXT, branch TEXT, goal TEXT,
+    current_step TEXT, created_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS questions (
+    id TEXT PRIMARY KEY, task_id TEXT, step_id TEXT, type TEXT,
+    urgency TEXT, status TEXT, asked_at TEXT, answered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, task_id TEXT,
+    step_id TEXT, event TEXT, json TEXT
+);
+"""
+
+
+def fm_home() -> Path:
+    return Path(os.environ.get("FM_HOME", str(Path.home() / ".firstmate")))
+
+
+class Store:
+    def __init__(self, home: Path | None = None):
+        self.home = Path(home) if home else fm_home()
+        (self.home / "tasks").mkdir(parents=True, exist_ok=True)
+        (self.home / "memory").mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False: FastAPI's test client and to_thread
+        # helpers may touch the index from another thread; writes still
+        # funnel through the single daemon process.
+        self.db = sqlite3.connect(str(self.home / "firstmate.db"), check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript(_SCHEMA)
+        self.reindex()
+
+    # ------------------------------------------------------------- paths
+
+    def task_dir(self, task_id: str) -> Path:
+        return self.home / "tasks" / task_id
+
+    def step_dir(self, task_id: str, step_id: str) -> Path:
+        return self.task_dir(task_id) / "steps" / step_id
+
+    # ------------------------------------------------------------- config
+
+    def config(self) -> dict:
+        path = self.home / "config.json"
+        cfg = dict(DEFAULT_CONFIG)
+        if path.exists():
+            cfg.update(json.loads(path.read_text()))
+        else:
+            path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
+        return cfg
+
+    # -------------------------------------------------------------- tasks
+
+    def create_task(self, contract: Contract) -> Task:
+        task_id = f"{slugify(contract.goal)}-{uuid.uuid4().hex[:4]}"
+        task = Task(
+            id=task_id,
+            repo=contract.repo,
+            branch=f"fm/{task_id}",
+            goal=contract.goal,
+            steps=[StepState(id=s.id) for s in contract.steps],
+        )
+        self.save_contract(task_id, contract)
+        self.save_task(task)
+        self.append_event(task_id, "task_created")
+        return task
+
+    def save_task(self, task: Task) -> None:
+        task.updated_at = now_iso()
+        d = self.task_dir(task.id)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "task.json").write_text(json.dumps(task.to_dict(), indent=2) + "\n")
+        self.db.execute(
+            "INSERT OR REPLACE INTO tasks VALUES (?,?,?,?,?,?,?,?)",
+            (task.id, task.status, task.repo, task.branch, task.goal,
+             task.current_step, task.created_at, task.updated_at),
+        )
+        self.db.commit()
+
+    def load_task(self, task_id: str) -> Task | None:
+        path = self.task_dir(task_id) / "task.json"
+        if not path.exists():
+            return None
+        return Task.from_dict(json.loads(path.read_text()))
+
+    def list_tasks(self) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT id, status, repo, branch, goal, current_step, created_at, updated_at "
+            "FROM tasks ORDER BY created_at"
+        ).fetchall()
+        keys = ["id", "status", "repo", "branch", "goal", "current_step", "created_at", "updated_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    # ----------------------------------------------------------- contract
+
+    def save_contract(self, task_id: str, contract: Contract) -> None:
+        d = self.task_dir(task_id)
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "contract.json").write_text(json.dumps(contract.to_dict(), indent=2) + "\n")
+        (d / "contract.md").write_text(contract.render_markdown())
+
+    def load_contract(self, task_id: str) -> Contract | None:
+        path = self.task_dir(task_id) / "contract.json"
+        if not path.exists():
+            return None
+        return Contract.from_dict(json.loads(path.read_text()))
+
+    # ------------------------------------------------------------- events
+
+    def append_event(self, task_id: str, event: str, step_id: str | None = None,
+                     data: dict | None = None) -> dict:
+        evt = {"ts": now_iso(), "event": event, "task_id": task_id, "step_id": step_id}
+        if data:
+            evt["data"] = data
+        d = self.task_dir(task_id)
+        d.mkdir(parents=True, exist_ok=True)
+        with (d / "events.jsonl").open("a") as f:
+            f.write(json.dumps(evt) + "\n")
+        self.db.execute(
+            "INSERT INTO events (ts, task_id, step_id, event, json) VALUES (?,?,?,?,?)",
+            (evt["ts"], task_id, step_id, event, json.dumps(evt)),
+        )
+        self.db.commit()
+        return evt
+
+    def events_tail(self, task_id: str, n: int = 50) -> list[dict]:
+        path = self.task_dir(task_id) / "events.jsonl"
+        if not path.exists():
+            return []
+        lines = path.read_text().splitlines()
+        return [json.loads(l) for l in lines[-n:] if l.strip()]
+
+    # ---------------------------------------------------------- questions
+
+    def save_question(self, q: Question) -> None:
+        d = self.task_dir(q.task_id) / "questions"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{q.id}.json").write_text(json.dumps(q.to_dict(), indent=2) + "\n")
+        self.db.execute(
+            "INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?)",
+            (q.id, q.task_id, q.step_id, q.type, q.urgency, q.status,
+             q.asked_at, q.answered_at),
+        )
+        self.db.commit()
+
+    def load_question(self, qid: str) -> Question | None:
+        row = self.db.execute("SELECT task_id FROM questions WHERE id=?", (qid,)).fetchone()
+        candidates = [row[0]] if row else [t["id"] for t in self.list_tasks()]
+        for task_id in candidates:
+            path = self.task_dir(task_id) / "questions" / f"{qid}.json"
+            if path.exists():
+                return Question.from_dict(json.loads(path.read_text()))
+        return None
+
+    def list_questions(self, task_id: str | None = None,
+                       status: str | None = None) -> list[Question]:
+        sql, args = "SELECT id, task_id FROM questions", []
+        clauses = []
+        if task_id:
+            clauses.append("task_id=?")
+            args.append(task_id)
+        if status:
+            clauses.append("status=?")
+            args.append(status)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY asked_at"
+        out = []
+        for qid, tid in self.db.execute(sql, args).fetchall():
+            path = self.task_dir(tid) / "questions" / f"{qid}.json"
+            if path.exists():
+                out.append(Question.from_dict(json.loads(path.read_text())))
+        return out
+
+    def answer_question(self, qid: str, answer: str, by: str) -> Question:
+        q = self.load_question(qid)
+        if q is None:
+            raise KeyError(f"unknown question: {qid}")
+        if q.status == "answered":
+            raise ValueError(f"question {qid} already answered: {q.answer!r}")
+        q.status = "answered"
+        q.answer = answer
+        q.answered_by = by
+        q.answered_at = now_iso()
+        self.save_question(q)
+        # Answers amend the contract (PRD §6.5) — never implicit scope.
+        contract = self.load_contract(q.task_id)
+        if contract is not None and q.type != "fyi":
+            contract.amendments.append(
+                {"at": q.answered_at, "question_id": q.id,
+                 "question": q.question, "answer": answer, "by": by}
+            )
+            self.save_contract(q.task_id, contract)
+        return q
+
+    # ------------------------------------------------- step artifacts
+
+    def save_step_artifact(self, task_id: str, step_id: str, filename: str, text: str) -> Path:
+        d = self.step_dir(task_id, step_id)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / filename
+        path.write_text(text if text.endswith("\n") else text + "\n")
+        return path
+
+    def latest_handoff(self, task_id: str, step_id: str) -> tuple[int, str] | None:
+        """Highest-generation handoff brief for a step, or None."""
+        d = self.step_dir(task_id, step_id)
+        best: tuple[int, Path] | None = None
+        if d.exists():
+            for p in d.glob("handoff-gen*.md"):
+                m = re.match(r"handoff-gen(\d+)\.md$", p.name)
+                if m:
+                    gen = int(m.group(1))
+                    if best is None or gen > best[0]:
+                        best = (gen, p)
+        if best is None:
+            return None
+        return best[0], best[1].read_text()
+
+    def save_validation(self, task_id: str, step_id: str | None, attempt: int,
+                        results: list) -> Path:
+        """Persist criterion results (evidence) as jq-able JSON."""
+        payload = {"at": now_iso(), "attempt": attempt,
+                   "results": [r.to_dict() for r in results]}
+        if step_id is None:
+            d = self.task_dir(task_id)
+            path = d / "validation.json"
+        else:
+            d = self.step_dir(task_id, step_id)
+            path = d / f"validation-attempt{attempt}.json"
+        d.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+        return path
+
+    # ------------------------------------------------------------- memory
+
+    def memory_for_project(self, project: str) -> str | None:
+        path = self.home / "memory" / f"{project}.md"
+        return path.read_text() if path.exists() else None
+
+    def remember(self, project: str, fact: str) -> Path:
+        path = self.home / "memory" / f"{project}.md"
+        if not path.exists():
+            path.write_text(f"# Project memory: {project}\n\n")
+        with path.open("a") as f:
+            f.write(f"- {now_iso()} — {fact}\n")
+        return path
+
+    # -------------------------------------------------------------- index
+
+    def reindex(self) -> None:
+        """Rebuild the SQLite index from the files. Cheap at this scale;
+        keeps hand-edits and db deletion safe."""
+        self.db.execute("DELETE FROM tasks")
+        self.db.execute("DELETE FROM questions")
+        self.db.execute("DELETE FROM events")
+        for tdir in sorted((self.home / "tasks").iterdir()) if (self.home / "tasks").exists() else []:
+            tj = tdir / "task.json"
+            if not tj.is_file():
+                continue
+            try:
+                task = Task.from_dict(json.loads(tj.read_text()))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            self.db.execute(
+                "INSERT OR REPLACE INTO tasks VALUES (?,?,?,?,?,?,?,?)",
+                (task.id, task.status, task.repo, task.branch, task.goal,
+                 task.current_step, task.created_at, task.updated_at),
+            )
+            qdir = tdir / "questions"
+            if qdir.exists():
+                for qf in sorted(qdir.glob("*.json")):
+                    try:
+                        q = Question.from_dict(json.loads(qf.read_text()))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    self.db.execute(
+                        "INSERT OR REPLACE INTO questions VALUES (?,?,?,?,?,?,?,?)",
+                        (q.id, q.task_id, q.step_id, q.type, q.urgency, q.status,
+                         q.asked_at, q.answered_at),
+                    )
+            ev = tdir / "events.jsonl"
+            if ev.exists():
+                for line in ev.read_text().splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        evt = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    self.db.execute(
+                        "INSERT INTO events (ts, task_id, step_id, event, json) VALUES (?,?,?,?,?)",
+                        (evt.get("ts"), evt.get("task_id"), evt.get("step_id"),
+                         evt.get("event"), line),
+                    )
+        self.db.commit()

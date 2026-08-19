@@ -10,6 +10,7 @@ first_mate/
 ├── PRD.md                      the specification — start here
 ├── CLAUDE.md                   agent context + session protocol (auto-loaded by Claude Code)
 ├── STATUS.md                   living project status / hand-off log — agents read first, update last
+├── daemon/                     the fm daemon (Python) — orchestrator, API, CLI; see daemon/README.md
 └── prototype/
     ├── dashboard.html          clickable UI prototype (open in a browser)
     └── screenshots/
