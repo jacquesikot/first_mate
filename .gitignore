@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# Python (daemon)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / TypeScript (dashboard, Phase 3)
+node_modules/
+*.tsbuildinfo
+.vite/
+
+# Environment / secrets (Slack tokens etc.)
+.env
+.env.*
+!.env.example
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Local runtime state — lives in ~/.firstmate/, but guard against accidents
+.firstmate/
+
+# Claude Code local settings
+.claude/settings.local.json
