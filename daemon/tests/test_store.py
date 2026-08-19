@@ -111,3 +111,56 @@ def test_config_defaults_written(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({"max_workers": 7}))
     assert store.config()["max_workers"] == 7
     assert store.config()["port"] == 8787  # defaults still filled in
+
+
+def test_allow_answer_widens_scope(tmp_path):
+    store = Store(tmp_path)
+    task = store.create_task(CONTRACT)
+    q = Question(id=new_id("q"), task_id=task.id, step_id="s1",
+                 type="scope_change", question="Need to touch docs/x.md",
+                 options=["allow", "deny"],
+                 evidence={"paths": ["docs/x.md"]})
+    store.save_question(q)
+    store.answer_question(q.id, "allow", "test")
+    contract = store.load_contract(task.id)
+    assert "docs/x.md" in contract.scope_in
+    assert contract.tripwire_allow == []  # no tripwire involved
+
+
+def test_deny_answer_leaves_scope_alone(tmp_path):
+    store = Store(tmp_path)
+    task = store.create_task(CONTRACT)
+    q = Question(id=new_id("q"), task_id=task.id, type="scope_change",
+                 question="?", evidence={"paths": ["docs/x.md"]})
+    store.save_question(q)
+    store.answer_question(q.id, "deny", "test")
+    contract = store.load_contract(task.id)
+    assert "docs/x.md" not in contract.scope_in
+    assert contract.amendments  # but the answer is still recorded
+
+
+def test_allow_answer_exempts_path_tripwire(tmp_path):
+    store = Store(tmp_path)
+    task = store.create_task(CONTRACT)
+    q = Question(id=new_id("q"), task_id=task.id, type="approval",
+                 question="edit package.json?",
+                 evidence={"tripwire": "dependency_manifests",
+                           "paths": ["package.json"]})
+    store.save_question(q)
+    store.answer_question(q.id, "allow — but only lodash", "test")
+    contract = store.load_contract(task.id)
+    assert "package.json" in contract.scope_in
+    assert "package.json" in contract.tripwire_allow
+    assert "dependency_manifests" not in contract.tripwires  # stays armed globally
+
+
+def test_allow_answer_disables_nonpath_tripwire(tmp_path):
+    store = Store(tmp_path)
+    task = store.create_task(CONTRACT)
+    q = Question(id=new_id("q"), task_id=task.id, type="approval",
+                 question="diff is big — proceed?",
+                 evidence={"tripwire": "max_diff_lines", "value": 4000})
+    store.save_question(q)
+    store.answer_question(q.id, "allow", "test")
+    contract = store.load_contract(task.id)
+    assert contract.tripwires["max_diff_lines"] is False

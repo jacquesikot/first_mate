@@ -95,6 +95,11 @@ class Contract:
     criteria: list[Criterion] = field(default_factory=list)
     scope_in: list[str] = field(default_factory=lambda: ["**"])
     scope_out: list[str] = field(default_factory=list)
+    # Tripwire overrides for this task (e.g. {"git_push": false} after an
+    # operator approval); merged over the project defaults in config.json.
+    tripwires: dict = field(default_factory=dict)
+    # Path globs exempted from path tripwires by operator approvals.
+    tripwire_allow: list[str] = field(default_factory=list)
     context: str = ""
     amendments: list[dict] = field(default_factory=list)
 
@@ -126,6 +131,13 @@ class Contract:
             f"- In: {', '.join(self.scope_in)}",
             f"- Out: {', '.join(self.scope_out) or '(none)'}",
         ]
+        if self.tripwires:
+            lines.append(
+                "- Tripwire overrides: "
+                + ", ".join(f"{k}={v}" for k, v in sorted(self.tripwires.items()))
+            )
+        if self.tripwire_allow:
+            lines.append(f"- Tripwire-exempt paths: {', '.join(self.tripwire_allow)}")
         lines += ["", "## Steps", ""]
         for i, s in enumerate(self.steps, 1):
             crit = f" (criteria: {', '.join(s.criteria)})" if s.criteria else ""
@@ -157,6 +169,26 @@ def validate_contract(data: dict) -> list[str]:
     steps = data.get("steps") or []
     if not steps:
         errors.append("at least one step is required")
+    for key in ("scope_in", "scope_out", "tripwire_allow"):
+        val = data.get(key)
+        if val is not None and (
+            not isinstance(val, list) or any(not isinstance(g, str) or not g.strip() for g in val)
+        ):
+            errors.append(f"{key} must be a list of glob strings")
+    tripwires = data.get("tripwires")
+    if tripwires is not None:
+        if not isinstance(tripwires, dict):
+            errors.append("tripwires must be an object")
+        else:
+            from .guard import KNOWN_TRIPWIRES
+
+            for k, v in tripwires.items():
+                if k not in KNOWN_TRIPWIRES:
+                    errors.append(
+                        f"unknown tripwire '{k}' (known: {', '.join(sorted(KNOWN_TRIPWIRES))})"
+                    )
+                elif not isinstance(v, (bool, int)):
+                    errors.append(f"tripwire '{k}' must be a boolean or number")
     crit_ids: set[str] = set()
     for c in data.get("criteria") or []:
         cid = str(c.get("id", "")).strip()

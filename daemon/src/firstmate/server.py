@@ -258,7 +258,8 @@ def create_app(store: Store | None = None, autostart: bool = True,
         task = store.load_task(q.task_id)
         resumed = False
         if task is not None and task.status == "blocked":
-            if q.type == "decision" and answer.lower() == "abandon":
+            if (q.type in ("decision", "approval") and answer.lower() == "abandon"
+                    and "abandon" in [o.lower() for o in q.options]):
                 task.status = "abandoned"
                 store.save_task(task)
                 evt = store.append_event(task.id, "task_status",

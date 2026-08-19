@@ -1,7 +1,8 @@
 # First Mate daemon
 
-Python package for the `fm` daemon (PRD §7). Phase 1 (orchestrator core)
-is implemented on top of the Phase-0-proven execution layer.
+Python package for the `fm` daemon (PRD §7). Phases 1 (orchestrator core)
+and 2 (scoping + scope guard) are implemented on top of the
+Phase-0-proven execution layer.
 
 ```
 src/firstmate/
@@ -16,13 +17,16 @@ src/firstmate/
                    SQLite index (rebuildable) under ~/.firstmate
   validation.py    shell-command criteria + evidence capture
   workerfiles.py   per-worker hook scripts (`fm _event` → daemon) + injection
+  guard.py         scope guard: glob scope checks, bash write/tripwire
+                   heuristics, guard.json compilation (stdlib-only)
+  scoping.py       interactive scoping conversation (fm task "<goal>")
   relay.py         handoff acquisition (resume-the-walled-session)
   orchestrator.py  the deterministic per-task loop (wall relay, park mode,
-                   failure ladder, validation gates)
+                   failure ladder, validation gates, diff tripwires)
   server.py        FastAPI daemon: REST + WebSocket, Manager (concurrency
                    cap, boot reconciliation)
-  cli.py           `fm` CLI (serve/task/run/status/attach/answer/pause/
-                   abandon/remember/ask/_event)
+  cli.py           `fm` CLI (serve/task/contract/run/status/attach/answer/
+                   pause/abandon/remember/ask/_event/_guard)
   smoke.py         Phase 1 end-to-end smoke test (real workers)
   spike/relay.py   Phase 0 relay spike (kept as reference)
 ```
@@ -38,15 +42,31 @@ uv sync
 uv run --group dev pytest      # hermetic — no workers spawned
 ```
 
-## Using it (Phase 1)
+## Using it
 
-Scoping conversations arrive in Phase 2; today a task starts from a
-hand-written contract JSON:
+```sh
+uv run fm serve                 # daemon on 127.0.0.1:8787
+cd /path/to/your/repo
+uv run fm task "add rate limiting to the API"   # interactive scoping chat
+uv run fm run <task-id>         # start the approved task
+uv run fm status                # tasks + open questions
+uv run fm attach <task-id>      # drop into the live tmux window
+uv run fm answer <qid> <choice> # unblock a parked task
+```
+
+`fm task "<goal>"` opens an interactive Claude session primed with the
+scoping prompt: it reads project memory + the repo, proposes scope/steps/
+criteria, refuses vague criteria, self-checks with `fm contract check`,
+and writes contract JSON that is submitted to the daemon when the session
+ends. Hand-written contracts still work via `fm task add <contract.json>`:
 
 ```jsonc
 {
   "goal": "add rate limiting to the API",
   "repo": "/abs/path/to/repo",
+  "scope_in": ["src/api/**", "tests/api/**"],   // globs; default ["**"]
+  "scope_out": [],
+  "tripwires": {},               // per-task overrides, e.g. {"git_push": false}
   "steps": [
     {"id": "implement", "prompt": "…what to do…", "criteria": ["tests"],
      "allowed_tools": ["Read", "Edit", "Write", "Bash(npm test:*)"]}
@@ -57,21 +77,29 @@ hand-written contract JSON:
 }
 ```
 
-```sh
-uv run fm serve                 # daemon on 127.0.0.1:8787
-uv run fm task add contract.json --run
-uv run fm status                # tasks + open questions
-uv run fm attach <task-id>      # drop into the live tmux window
-uv run fm answer <qid> <choice> # unblock a parked task
-```
+### Scope guard + tripwires (Phase 2)
+
+Every worker gets a PreToolUse hook (`fm _guard`) compiled from the
+contract into `<worktree>/.fm/guard.json`. It mechanically blocks (exit 2,
+in-band message): Edit/Write outside `scope_in`/inside `scope_out`, writes
+outside the worktree, writes to `.fm/`, and tripwires — dependency-manifest
+edits and installs (`npm install <pkg>`, `uv add`, …), migrations,
+`git push`. Diff-shaped tripwires (`max_diff_lines`, `max_deleted_lines`)
+are checked by the orchestrator at step boundaries. The block message tells
+the worker exactly how to raise a `scope_change`/`approval` question; an
+operator answer starting with "allow" mechanically widens `scope_in` /
+`tripwire_allow` (path evidence) or disables that tripwire (non-path
+evidence) via a contract amendment — the next generation's guard.json
+picks it up.
 
 State lives under `~/.firstmate/` (`FM_HOME` overrides), all of it
 `cat`/`jq`-debuggable; `firstmate.db` is only an index and is rebuilt
 from the files on every daemon start.
 
 Config: `~/.firstmate/config.json` — `port`, `max_workers` (global worker
-slot cap), `worker_model`, `wall_tokens` (relay trigger), `max_generations`,
-`worker_timeout_s`, `poll_seconds`.
+slot cap), `worker_model`, `scoping_model`, `wall_tokens` (relay trigger),
+`max_generations`, `worker_timeout_s`, `poll_seconds`, `tripwires`
+(project-wide defaults).
 
 ## End-to-end smoke test
 

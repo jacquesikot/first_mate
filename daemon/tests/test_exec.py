@@ -137,3 +137,17 @@ def test_build_command_fresh_vs_resume(tmp_path: Path):
     spec_r = spawner.WorkerSpec(prompt="p", cwd=tmp_path, name="w", resume="abc")
     cmd_r = spawner.build_command(spec_r)
     assert "--resume" in cmd_r and "--session-id" not in cmd_r
+
+
+def test_diff_numstat(tmp_path: Path):
+    repo = tmp_path / "repo"
+    gitops.init_repo(repo)
+    (repo / "a.txt").write_text("one\ntwo\nthree\n")
+    gitops._git(repo, "add", "a.txt")
+    gitops._git(repo, "commit", "-q", "-m", "add a")
+    assert gitops.diff_numstat(repo) == (0, 0)
+    (repo / "a.txt").write_text("one\nTWO\n")  # 1 added, 2 deleted
+    (repo / "b.txt").write_text("x\ny\n")
+    gitops._git(repo, "add", "b.txt")  # staged new file counts: 2 added
+    added, deleted = gitops.diff_numstat(repo)
+    assert (added, deleted) == (3, 2)

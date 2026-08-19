@@ -82,23 +82,77 @@ def cmd_serve(args) -> int:
     return 0
 
 
-def cmd_task(args) -> int:
-    if args.target != "add":
-        print("Interactive scoping arrives in Phase 2.")
-        print('For now, write a contract JSON and run: fm task add <contract.json> [--run]')
-        return 1
-    if not args.contract:
-        print("usage: fm task add <contract.json> [--run]", file=sys.stderr)
-        return 2
-    path = Path(args.contract)
-    if not path.exists():
-        print(f"no such file: {path}", file=sys.stderr)
-        return 2
-    contract = json.loads(path.read_text())
-    resp = api("POST", "/tasks", {"contract": contract, "run": args.run})
+def _submit_contract(contract: dict, run: bool, source: Path | None = None) -> int:
+    try:
+        resp = api("POST", "/tasks", {"contract": contract, "run": run})
+    except CliError as e:
+        if source is not None:
+            print(f"fm: {e}", file=sys.stderr)
+            print(f"contract saved at {source} — create the task later with:")
+            print(f"  fm task add {source}{' --run' if run else ''}")
+            return 1
+        raise
     task = resp["task"]
     print(f"task created: {task['id']} (status {task['status']}"
           f"{', started' if resp.get('started') else ''})")
+    if not resp.get("started"):
+        print(f"start it with: fm run {task['id']}")
+    return 0
+
+
+def cmd_task(args) -> int:
+    if args.target == "add":
+        if not args.contract:
+            print("usage: fm task add <contract.json> [--run]", file=sys.stderr)
+            return 2
+        path = Path(args.contract)
+        if not path.exists():
+            print(f"no such file: {path}", file=sys.stderr)
+            return 2
+        return _submit_contract(json.loads(path.read_text()), args.run, source=path)
+
+    # `fm task "<goal>"` — interactive scoping conversation (PRD §6.1).
+    from . import scoping
+
+    goal = args.target if not args.contract else f"{args.target} {args.contract}"
+    repo = scoping.repo_root(Path.cwd())
+    home = fm_home()
+    model = None
+    cfg = home / "config.json"
+    if cfg.exists():
+        try:
+            model = json.loads(cfg.read_text()).get("scoping_model")
+        except json.JSONDecodeError:
+            pass
+    print(f"scoping '{goal}' in {repo} — an interactive Claude session is starting;")
+    print("push back on its proposal until the contract is right, then approve.")
+    try:
+        result = scoping.run_scoping(goal, repo, home, model=model)
+    except FileNotFoundError:
+        print("fm: `claude` not found on PATH — install Claude Code first.",
+              file=sys.stderr)
+        return 1
+    if result.contract is None or result.errors:
+        for err in result.errors:
+            print(f"fm: {err}", file=sys.stderr)
+        if result.contract_path.exists():
+            print(f"fix the contract at {result.contract_path} and submit with:")
+            print(f"  fm task add {result.contract_path}")
+        return 1
+    return _submit_contract(result.contract, args.run, source=result.contract_path)
+
+
+def cmd_contract(args) -> int:
+    from .scoping import check_contract_file
+
+    errors = check_contract_file(Path(args.path))
+    if errors:
+        for err in errors:
+            print(f"✗ {err}")
+        return 1
+    data = json.loads(Path(args.path).read_text())
+    print(f"✓ contract OK: {len(data.get('steps', []))} step(s), "
+          f"{len(data.get('criteria', []))} criterion(s)")
     return 0
 
 
@@ -244,6 +298,61 @@ def cmd_event(args) -> int:
     return 0  # hooks must never fail the worker
 
 
+def cmd_guard(args) -> int:
+    """PreToolUse scope guard (PRD §6.4). Exit 0 allows the tool call;
+    exit 2 blocks it and feeds stderr back to the agent in-band."""
+    payload: dict = {}
+    if not sys.stdin.isatty():
+        raw = sys.stdin.read().strip()
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError:
+                payload = {}
+
+    def notify(data: dict) -> None:
+        body = {"event": "GuardBlock", "task_id": args.task,
+                "step_id": args.step, "payload": data}
+        try:
+            api("POST", "/internal/events", body, base=args.url, timeout=3.0)
+        except CliError:
+            if args.fallback:
+                try:
+                    with open(args.fallback, "a") as f:
+                        f.write(json.dumps(body) + "\n")
+                except OSError:
+                    pass
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        return 0  # guard not configured for this worker
+    try:
+        from . import guard
+
+        config = json.loads(config_path.read_text())
+        decision = guard.evaluate(
+            config,
+            str(payload.get("tool_name", "") or ""),
+            payload.get("tool_input") or {},
+        )
+    except Exception as e:  # fail closed — a silent bypass is worse than a question
+        print(
+            "First Mate scope guard: internal error while evaluating this call "
+            f"({e!r}); blocking conservatively. If you cannot proceed, raise a "
+            "scope_change question with `fm ask` and stop.",
+            file=sys.stderr,
+        )
+        notify({"error": repr(e), "tool_name": payload.get("tool_name")})
+        return 2
+    if decision.allowed:
+        return 0
+    print(decision.message, file=sys.stderr)
+    notify({"code": decision.code, "path": decision.path,
+            "tripwire": decision.tripwire,
+            "tool_name": payload.get("tool_name")})
+    return 2
+
+
 # --------------------------------------------------------------- parser
 
 
@@ -256,11 +365,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--open", action="store_true")
     sp.set_defaults(func=cmd_serve)
 
-    sp = sub.add_parser("task", help="create a task (Phase 1: fm task add <contract.json>)")
-    sp.add_argument("target", help="'add' or a goal string (scoping: Phase 2)")
-    sp.add_argument("contract", nargs="?", help="path to contract JSON")
+    sp = sub.add_parser(
+        "task",
+        help='fm task "<goal>" starts a scoping conversation; '
+             "fm task add <contract.json> submits a hand-written contract",
+    )
+    sp.add_argument("target", help="a goal string, or 'add'")
+    sp.add_argument("contract", nargs="?", help="path to contract JSON (with 'add')")
     sp.add_argument("--run", action="store_true", help="start immediately")
     sp.set_defaults(func=cmd_task)
+
+    sp = sub.add_parser("contract", help="contract utilities")
+    sp.add_argument("action", choices=["check"])
+    sp.add_argument("path", help="path to contract JSON")
+    sp.set_defaults(func=cmd_contract)
 
     sp = sub.add_parser("run", help="start/resume an approved task")
     sp.add_argument("task")
@@ -310,6 +428,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--url", default=None)
     sp.add_argument("--fallback", default=None)
     sp.set_defaults(func=cmd_event)
+
+    sp = sub.add_parser("_guard", help="(hook-facing) PreToolUse scope guard")
+    sp.add_argument("--config", required=True, help="path to guard.json")
+    sp.add_argument("--task", required=True)
+    sp.add_argument("--step", default=None)
+    sp.add_argument("--url", default=None)
+    sp.add_argument("--fallback", default=None)
+    sp.set_defaults(func=cmd_guard)
 
     return p
 

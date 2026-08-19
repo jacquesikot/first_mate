@@ -84,6 +84,20 @@ def diff_stat(worktree: Path) -> str:
     return _git(worktree, "diff", "HEAD", "--stat").stdout
 
 
+def diff_numstat(worktree: Path) -> tuple[int, int]:
+    """(added, deleted) line totals vs HEAD for tracked files. Binary
+    files report '-' in numstat and are counted as 0."""
+    out = _git(worktree, "diff", "HEAD", "--numstat").stdout
+    added = deleted = 0
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        added += int(parts[0]) if parts[0].isdigit() else 0
+        deleted += int(parts[1]) if parts[1].isdigit() else 0
+    return added, deleted
+
+
 def head_commit(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 

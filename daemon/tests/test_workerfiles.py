@@ -60,3 +60,24 @@ def test_write_inject(tmp_path):
     path = write_inject(tmp_path, "hello\n")
     assert path.read_text() == "hello\n"
     assert path == tmp_path / ".fm" / "inject.md"
+
+
+def test_write_worker_hooks_with_scope_guard(tmp_path):
+    guard_config = {"worktree": str(tmp_path), "scope_in": ["src/**"],
+                    "scope_out": [], "tripwire_allow": [], "tripwires": {}}
+    settings = write_worker_hooks(tmp_path, "task-1", "s1", "http://127.0.0.1:9",
+                                  "/opt/bin/fm", guard_config=guard_config)
+    data = json.loads(settings.read_text())
+    assert "PreToolUse" in data["hooks"]
+    entry = data["hooks"]["PreToolUse"][0]
+    assert entry["matcher"] == "Edit|Write|MultiEdit|NotebookEdit|Bash"
+    script = (tmp_path / ".fm" / "hooks" / "pre_tool_use.sh").read_text()
+    assert "_guard" in script and "guard.json" in script and "exit $?" in script
+    stored = json.loads((tmp_path / ".fm" / "guard.json").read_text())
+    assert stored["scope_in"] == ["src/**"]
+
+
+def test_write_worker_hooks_without_guard_omits_pretooluse(tmp_path):
+    settings = write_worker_hooks(tmp_path, "t", "s", "http://x", "/bin/fm")
+    data = json.loads(settings.read_text())
+    assert "PreToolUse" not in data["hooks"]

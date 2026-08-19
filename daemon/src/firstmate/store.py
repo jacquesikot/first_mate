@@ -36,10 +36,20 @@ DEFAULT_CONFIG = {
     "max_workers": 3,
     "worker_model": "sonnet",
     "handoff_model": None,  # null → the step's worker model
+    "scoping_model": None,  # null → the user's default claude model
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,
     "poll_seconds": 2.0,
+    # Scope-guard tripwires (PRD §6.4): project-wide defaults, overridable
+    # per task in the contract's "tripwires". False/0 disables one.
+    "tripwires": {
+        "dependency_manifests": True,
+        "migrations": True,
+        "git_push": True,
+        "max_diff_lines": 3000,
+        "max_deleted_lines": 500,
+    },
 }
 
 _SCHEMA = """
@@ -235,8 +245,31 @@ class Store:
                 {"at": q.answered_at, "question_id": q.id,
                  "question": q.question, "answer": answer, "by": by}
             )
+            self._apply_scope_widening(contract, q, answer)
             self.save_contract(q.task_id, contract)
         return q
+
+    @staticmethod
+    def _apply_scope_widening(contract: Contract, q: Question, answer: str) -> None:
+        """Mechanical amendment semantics for guard-raised questions: an
+        'allow' answer to a scope_change/approval question widens exactly
+        what its evidence names — the guard picks the change up on the
+        next generation's guard.json (PRD §6.4)."""
+        if q.type not in ("scope_change", "approval"):
+            return
+        if not answer.strip().lower().startswith(("allow", "yes")):
+            return
+        paths = [str(p) for p in (q.evidence or {}).get("paths") or [] if str(p).strip()]
+        tripwire = (q.evidence or {}).get("tripwire")
+        for p in paths:
+            if p not in contract.scope_in:
+                contract.scope_in.append(p)
+            if tripwire and p not in contract.tripwire_allow:
+                contract.tripwire_allow.append(p)
+        if tripwire and not paths:
+            # Non-path tripwire (git_push, diff thresholds): approval
+            # disables it for the rest of this task.
+            contract.tripwires[str(tripwire)] = False
 
     # ------------------------------------------------- step artifacts
 

@@ -23,7 +23,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from . import relay, spawner, validation, workerfiles
+from . import guard, relay, spawner, validation, workerfiles
 from .exec import context, gitops, tmux
 from .models import (
     Contract, Question, SessionRecord, StepSpec, StepState, Task,
@@ -63,6 +63,10 @@ change, approval needed, a failure you cannot diagnose), run:
 task and resumes with the operator's answer.
 - For trivial assumptions, do NOT stop; record and continue:
     fm ask --type fyi --question "assumed X because Y"
+- A scope guard may BLOCK tool calls that leave the contract's scope or \
+trip a tripwire (dependency changes, migrations, pushes). The block \
+message tells you exactly how to raise the question — follow it, then \
+stop. Do not try to work around a block.
 - When the step is complete, just stop. Do not write summaries.
 """
 
@@ -252,6 +256,12 @@ class TaskRunner:
                 self.store.save_task(task)
                 await self.emit("step_done", step_id=spec.id,
                                 generations=st.generation)
+                # Diff-shaped tripwires (PRD §6.4) at the step boundary —
+                # the step's work stands, but the task pauses for approval
+                # before any further steps build on an oversized diff.
+                if await self._diff_tripwires(task, contract, spec.id, worktree):
+                    await self._set_status(task, "blocked")
+                    return False
                 return True
 
             summary = "; ".join(
@@ -299,7 +309,8 @@ class TaskRunner:
         self.store.save_step_artifact(task.id, spec.id, f"inject-gen{gen}.md", inject)
         binary = fm_bin()
         settings = workerfiles.write_worker_hooks(
-            worktree, task.id, spec.id, self.daemon_url, binary)
+            worktree, task.id, spec.id, self.daemon_url, binary,
+            guard_config=guard.build_config(contract, self.config, worktree))
 
         allowed = list(spec.allowed_tools or DEFAULT_ALLOWED_TOOLS)
         if ASK_TOOL not in allowed:
@@ -397,6 +408,51 @@ class TaskRunner:
         return outcome, parked_q
 
     # ------------------------------------------------------------- helpers
+
+    async def _diff_tripwires(self, task: Task, contract: Contract,
+                              step_id: str, worktree: Path) -> bool:
+        """Check the diff-shaped tripwires (max_diff_lines,
+        max_deleted_lines). Returns True if a question was raised — each
+        tripwire is raised at most once per task; an 'allow' answer
+        disables it via the contract amendment semantics."""
+        merged = dict(guard.DEFAULT_TRIPWIRES)
+        merged.update(self.config.get("tripwires") or {})
+        merged.update(contract.tripwires or {})
+        try:
+            added, deleted = await asyncio.to_thread(gitops.diff_numstat, worktree)
+        except Exception:
+            return False
+        already_raised = {
+            (q.evidence or {}).get("tripwire")
+            for q in self.store.list_questions(task_id=task.id)
+        }
+        for name, value in (("max_diff_lines", added + deleted),
+                            ("max_deleted_lines", deleted)):
+            limit = merged.get(name)
+            if not limit or value <= int(limit) or name in already_raised:
+                continue
+            try:
+                diff_stat = gitops.diff_stat(worktree)
+            except Exception:
+                diff_stat = "(diff unavailable)"
+            q = Question(
+                id=new_id("q"),
+                task_id=task.id,
+                step_id=step_id,
+                type="approval",
+                urgency="blocking",
+                question=(f"Tripwire '{name}': the task's diff is at {value} lines "
+                          f"(limit {limit}) after step '{step_id}' — proceed?"),
+                options=["allow", "abandon"],
+                default="abandon",
+                evidence={"tripwire": name, "value": value, "limit": int(limit),
+                          "diff_stat": diff_stat},
+            )
+            self.store.save_question(q)
+            await self.emit("question_asked", step_id=step_id,
+                            question_id=q.id, question=q.question, type=q.type)
+            return True
+        return False
 
     async def _acquire_handoff(self, task: Task, spec: StepSpec, generation: int,
                                session_id: str, worktree: Path) -> str:
