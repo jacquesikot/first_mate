@@ -1,0 +1,1461 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#08080a; --s1:#0f0f12; --s2:#15151a; --s3:#1c1c22; --s4:#232329;
+  --bd:#22222a; --bd2:#2e2e38; --bd3:#3d3d48;
+  --tx:#ececed; --tx2:#9b9ba5; --tx3:#63636d; --tx4:#4a4a53;
+  --ac:#f2a83b; --acd:#c9862a; --acbg:rgba(242,168,59,0.09); --acbd:rgba(242,168,59,0.32);
+  --ok:#6bb389; --okbg:rgba(107,179,137,0.10); --bad:#cf6b60; --badbg:rgba(207,107,96,0.10);
+  --pad:18px; --rad:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{background:var(--bg);color:var(--tx);font-family:'IBM Plex Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-size:14px;line-height:1.45}
+button{font-family:inherit;font-size:inherit;cursor:pointer;border:0;background:none;color:inherit}
+input,textarea{font-family:inherit;font-size:inherit}
+a{color:var(--ac);text-decoration:none}
+a:hover{color:#ffc463;text-decoration:underline}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#2a2a32;border-radius:8px;border:3px solid transparent;background-clip:content-box}
+::-webkit-scrollbar-thumb:hover{background:#3a3a44;background-clip:content-box}
+@keyframes fmpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
+@keyframes fmrise{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes fmblink{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes fmsweep{from{background-position:0 0}to{background-position:36px 0}}
+</style>
+</helmet>
+
+<div style="display:flex;height:100vh;width:100%;overflow:hidden;background:var(--bg)">
+
+  <aside style="width:238px;flex:0 0 238px;display:flex;flex-direction:column;background:linear-gradient(178deg,#101014 0%,#0b0b0e 100%);border-right:1px solid var(--bd)">
+    <div style="padding:18px 16px 14px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;gap:9px">
+        <div style="width:22px;height:22px;border-radius:6px;background:linear-gradient(150deg,var(--ac),var(--acd));display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:500;color:#180f02">fm</div>
+        <div style="font-size:14px;font-weight:600;letter-spacing:-0.01em">First Mate</div>
+        <div style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4);border:1px solid var(--bd);border-radius:5px;padding:1px 5px">v1.0</div>
+      </div>
+
+      <div style="position:relative">
+        <button onClick="{{ toggleProj }}" style="width:100%;display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:var(--s2);border:1px solid var(--bd);text-align:left" style-hover="border-color:var(--bd3);background:var(--s3)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ project }}</span>
+          <span style="margin-left:auto;color:var(--tx3);font-size:10px">▾</span>
+        </button>
+        <sc-if value="{{ projOpen }}">
+          <div style="position:absolute;top:40px;left:0;right:0;z-index:40;background:var(--s3);border:1px solid var(--bd2);border-radius:8px;padding:5px;box-shadow:0 16px 40px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:1px">
+            <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+              <button onClick="{{ p.pick }}" style="display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;text-align:left" style-hover="background:var(--s4)">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ p.color }}">{{ p.name }}</span>
+                <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4)">{{ p.count }}</span>
+              </button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+
+    <nav style="display:flex;flex-direction:column;gap:2px;padding:0 10px">
+      <sc-for list="{{ nav }}" as="n" hint-placeholder-count="4">
+        <button onClick="{{ n.go }}" style="position:relative;display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;text-align:left;background:{{ n.bg }}" style-hover="background:var(--s2)">
+          <span style="position:absolute;left:0;top:9px;bottom:9px;width:2px;border-radius:2px;background:{{ n.bar }}"></span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;width:12px;color:{{ n.glyphColor }}">{{ n.glyph }}</span>
+          <span style="font-size:13px;font-weight:500;color:{{ n.color }}">{{ n.label }}</span>
+          <sc-if value="{{ n.badge }}">
+            <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10px;padding:1px 6px;border-radius:20px;background:{{ n.badgeBg }};color:{{ n.badgeColor }};border:1px solid {{ n.badgeBd }}">{{ n.badge }}</span>
+          </sc-if>
+        </button>
+      </sc-for>
+    </nav>
+
+    <div style="padding:14px 12px 6px">
+      <button onClick="{{ goNew }}" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:9px;border-radius:8px;background:var(--acbg);border:1px solid var(--acbd);color:var(--ac);font-size:13px;font-weight:500" style-hover="background:rgba(242,168,59,.16);border-color:var(--ac)">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:13px">+</span>
+        <span>New task</span>
+      </button>
+    </div>
+
+    <div style="margin-top:auto;padding:12px;border-top:1px solid var(--bd);display:flex;flex-direction:column;gap:9px">
+      <div style="display:flex;flex-direction:column;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:5px;height:5px;border-radius:50%;background:var(--ok);animation:fmpulse 2.4s ease-in-out infinite"></span>
+          <span>daemon up · {{ uptime }}</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:5px;height:5px;border-radius:50%;background:var(--ok)"></span>
+          <span>slack · socket mode</span>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <span>workers</span>
+          <span style="display:flex;gap:3px;align-items:center">
+            <sc-for list="{{ slots }}" as="s" hint-placeholder-count="4">
+              <span style="width:9px;height:5px;border-radius:1px;background:{{ s.c }}"></span>
+            </sc-for>
+            <span style="margin-left:5px;color:var(--tx3)">{{ slotLabel }}</span>
+          </span>
+        </div>
+      </div>
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4);padding-top:8px;border-top:1px solid var(--bd)">localhost:7717 · ⌘K</div>
+    </div>
+  </aside>
+
+  <main style="flex:1;min-width:0;display:flex;flex-direction:column;height:100vh">
+
+    <header style="flex:0 0 auto;height:54px;display:flex;align-items:center;gap:14px;padding:0 22px;border-bottom:1px solid var(--bd);background:linear-gradient(180deg,rgba(21,21,26,.9),rgba(11,11,14,.9));backdrop-filter:blur(6px)">
+      <div style="display:flex;align-items:baseline;gap:12px;min-width:0">
+        <span style="font-size:15px;font-weight:600;letter-spacing:-0.01em;white-space:nowrap">{{ headTitle }}</span>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ headSub }}</span>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+        <button onClick="{{ openPalette }}" style="display:flex;align-items:center;gap:8px;padding:5px 9px 5px 10px;border-radius:7px;border:1px solid var(--bd);background:var(--s2);color:var(--tx3);font-size:12px" style-hover="border-color:var(--bd3);color:var(--tx2)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px">search</span>
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;border:1px solid var(--bd2);border-radius:4px;padding:0 4px;color:var(--tx4)">⌘K</span>
+        </button>
+        <button onClick="{{ goInbox }}" style="display:flex;align-items:center;gap:8px;padding:6px 11px;border-radius:7px;border:1px solid {{ attnBd }};background:{{ attnBg }};color:{{ attnColor }};font-size:12px;font-weight:500" style-hover="border-color:var(--ac)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:11px">{{ attnGlyph }}</span>
+          <span>{{ attnLabel }}</span>
+        </button>
+      </div>
+    </header>
+
+    <div style="flex:1;min-height:0;overflow-y:auto">
+
+      <sc-if value="{{ isNow }}" hint-placeholder-val="{{ true }}">
+        <div data-screen-label="Now" style="padding:22px 22px 60px;display:flex;flex-direction:column;gap:26px;max-width:1180px">
+
+          <section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:12px">
+            <div style="padding:13px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:linear-gradient(180deg,var(--s2),var(--s1))">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--tx4);text-transform:uppercase">needs you</div>
+              <div style="display:flex;align-items:baseline;gap:7px;margin-top:7px">
+                <span style="font-size:26px;font-weight:600;color:var(--ac);letter-spacing:-0.02em">{{ statNeeds }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ statNeedsSub }}</span>
+              </div>
+            </div>
+            <div style="padding:13px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:linear-gradient(180deg,var(--s2),var(--s1))">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--tx4);text-transform:uppercase">running</div>
+              <div style="display:flex;align-items:baseline;gap:7px;margin-top:7px">
+                <span style="font-size:26px;font-weight:600;letter-spacing:-0.02em">{{ statRunning }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ slotLabel }} slots</span>
+              </div>
+            </div>
+            <div style="padding:13px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:linear-gradient(180deg,var(--s2),var(--s1))">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--tx4);text-transform:uppercase">relays today</div>
+              <div style="display:flex;align-items:baseline;gap:7px;margin-top:7px">
+                <span style="font-size:26px;font-weight:600;letter-spacing:-0.02em">4</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">0 lost threads</span>
+              </div>
+            </div>
+            <div style="padding:13px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:linear-gradient(180deg,var(--s2),var(--s1))">
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;color:var(--tx4);text-transform:uppercase">memory</div>
+              <div style="display:flex;align-items:baseline;gap:7px;margin-top:7px">
+                <span style="font-size:26px;font-weight:600;letter-spacing:-0.02em">{{ memCount }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ pendCount }} to promote</span>
+              </div>
+            </div>
+          </section>
+
+          <section style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ac)">needs you</span>
+              <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--acbd),transparent)"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">ranked by urgency, then age</span>
+            </div>
+
+            <sc-for list="{{ urgent }}" as="q" hint-placeholder-count="2">
+              <article style="border:1px solid {{ q.bd }};border-left:2px solid {{ q.rail }};border-radius:var(--rad);background:linear-gradient(180deg,var(--s2),var(--s1));overflow:hidden;animation:fmrise .3s ease both">
+                <div style="display:flex;align-items:center;gap:10px;padding:10px 15px;border-bottom:1px solid var(--bd);background:rgba(0,0,0,.18)">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:4px;background:{{ q.chipBg }};color:{{ q.chipColor }};border:1px solid {{ q.chipBd }}">{{ q.type }}</span>
+                  <button onClick="{{ q.openTask }}" style="font-size:13px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" style-hover="color:var(--tx);text-decoration:underline">{{ q.taskTitle }}</button>
+                  <span style="margin-left:auto;display:flex;align-items:center;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">
+                    <sc-if value="{{ q.slack }}"><span style="border:1px solid var(--bd2);border-radius:4px;padding:1px 5px">also in slack</span></sc-if>
+                    <span>{{ q.age }} ago</span>
+                  </span>
+                </div>
+
+                <sc-if value="{{ q.open }}" hint-placeholder-val="{{ true }}">
+                  <div style="padding:15px">
+                    <div style="font-size:15px;line-height:1.5;color:var(--tx);max-width:74ch;text-wrap:pretty">{{ q.body }}</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:12px">
+                      <sc-for list="{{ q.evidence }}" as="e" hint-placeholder-count="3">
+                        <span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 8px;border-radius:5px;background:var(--s3);border:1px solid var(--bd)">
+                          <span style="color:var(--tx4)">{{ e.k }}</span>
+                          <span style="color:{{ e.color }}">{{ e.v }}</span>
+                        </span>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:15px">
+                      <sc-for list="{{ q.options }}" as="o" hint-placeholder-count="3">
+                        <button onClick="{{ o.pick }}" style="padding:8px 14px;border-radius:7px;border:1px solid {{ o.bd }};background:{{ o.bg }};color:{{ o.color }};font-size:13px;font-weight:500" style-hover="border-color:var(--ac);color:var(--ac)">{{ o.label }}</button>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:14px;margin-top:13px;padding-top:12px;border-top:1px solid var(--bd);font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);flex-wrap:wrap">
+                      <span>default in {{ q.defIn }} → {{ q.def }}</span>
+                      <span>{{ q.parked }}</span>
+                      <span style="margin-left:auto;color:var(--tx3)">or: fm answer {{ q.id }} 1</span>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ q.resolved }}">
+                  <div style="padding:14px 15px;display:flex;align-items:center;gap:11px;background:var(--okbg)">
+                    <span style="font-family:'IBM Plex Mono',monospace;color:var(--ok);font-size:13px">✓</span>
+                    <div style="display:flex;flex-direction:column;gap:2px">
+                      <span style="font-size:13px;color:var(--tx)">{{ q.chosen }}</span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)">{{ q.after }}</span>
+                    </div>
+                  </div>
+                </sc-if>
+              </article>
+            </sc-for>
+
+            <sc-if value="{{ noUrgent }}">
+              <div style="padding:26px;border:1px dashed var(--bd2);border-radius:var(--rad);text-align:center;color:var(--tx3);font-size:13px">
+                Nothing needs you. <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--tx4)">{{ inboxRest }}</span>
+              </div>
+            </sc-if>
+          </section>
+
+          <section style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx2)">live</span>
+              <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--bd2),transparent)"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">pushed over websocket</span>
+            </div>
+
+            <sc-for list="{{ liveTasks }}" as="t" hint-placeholder-count="2">
+              <article style="border:1px solid var(--bd);border-radius:var(--rad);background:linear-gradient(180deg,var(--s2),var(--s1));overflow:hidden">
+                <div style="display:flex;align-items:flex-start;gap:14px;padding:14px 16px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ t.glyphColor }};padding-top:3px;{{ t.glyphAnim }}">{{ t.glyph }}</span>
+                  <div style="min-width:0;flex:1">
+                    <button onClick="{{ t.open }}" style="display:block;text-align:left;font-size:15px;font-weight:500;letter-spacing:-0.01em;color:var(--tx)" style-hover="color:var(--ac)">{{ t.title }}</button>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:5px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex-wrap:wrap">
+                      <span style="color:var(--tx3)">{{ t.repo }}</span>
+                      <span>·</span>
+                      <span>{{ t.branch }}</span>
+                      <span>·</span>
+                      <span style="color:var(--tx3)">{{ t.step }}</span>
+                      <sc-if value="{{ t.genBadge }}">
+                        <span style="border:1px solid var(--bd2);border-radius:4px;padding:0 5px;color:var(--tx3)">{{ t.genBadge }}</span>
+                      </sc-if>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:20px;flex:0 0 auto">
+                    <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start">
+                      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;color:var(--tx4);text-transform:uppercase">criteria</div>
+                      <div style="display:flex;gap:3px">
+                        <sc-for list="{{ t.pips }}" as="p" hint-placeholder-count="5">
+                          <span style="width:14px;height:5px;border-radius:1px;background:{{ p.c }}"></span>
+                        </sc-for>
+                      </div>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:5px;align-items:flex-start;width:132px">
+                      <div style="display:flex;justify-content:space-between;width:100%;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;color:var(--tx4);text-transform:uppercase">
+                        <span>context</span>
+                        <span style="color:{{ t.ctxColor }}">{{ t.ctxLabel }}</span>
+                      </div>
+                      <div style="width:100%;height:5px;border-radius:3px;background:var(--s4);overflow:hidden">
+                        <div style="height:100%;border-radius:3px;background:{{ t.ctxColor }};width:{{ t.ctxPct }}%;transition:width .9s linear"></div>
+                      </div>
+                      <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4)">{{ t.ctxNote }}</div>
+                    </div>
+                  </div>
+                </div>
+                <sc-if value="{{ t.hasOutput }}" hint-placeholder-val="{{ true }}">
+                  <div style="border-top:1px solid var(--bd);background:#07070a;padding:10px 16px;display:flex;flex-direction:column;gap:3px">
+                    <sc-for list="{{ t.tail }}" as="l" hint-placeholder-count="3">
+                      <div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.55;color:{{ l.c }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;animation:fmrise .25s ease both">{{ l.t }}</div>
+                    </sc-for>
+                    <div style="display:flex;align-items:center;gap:10px;margin-top:6px;padding-top:8px;border-top:1px solid #14141a;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">
+                      <span style="color:var(--tx3)">read-only stream</span>
+                      <span>·</span>
+                      <button onClick="{{ t.copy }}" style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ac);display:flex;align-items:center;gap:6px" style-hover="text-decoration:underline">
+                        <span>{{ t.attach }}</span>
+                        <span style="color:var(--tx4)">{{ t.copyLabel }}</span>
+                      </button>
+                      <button onClick="{{ t.openOutput }}" style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)" style-hover="color:var(--tx)">full output →</button>
+                    </div>
+                  </div>
+                </sc-if>
+              </article>
+            </sc-for>
+          </section>
+
+          <section style="display:flex;flex-direction:column;gap:11px">
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx2)">settled today</span>
+              <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--bd2),transparent)"></span>
+            </div>
+            <div style="border:1px solid var(--bd);border-radius:var(--rad);overflow:hidden;background:var(--s1)">
+              <sc-for list="{{ settled }}" as="t" hint-placeholder-count="3">
+                <button onClick="{{ t.open }}" style="width:100%;display:flex;align-items:center;gap:13px;padding:11px 16px;border-bottom:1px solid var(--bd);text-align:left" style-hover="background:var(--s2)">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ t.glyphColor }};width:12px">{{ t.glyph }}</span>
+                  <span style="font-size:13.5px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.title }}</span>
+                  <span style="margin-left:auto;display:flex;align-items:center;gap:16px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex:0 0 auto">
+                    <span>{{ t.repo }}</span>
+                    <span style="color:{{ t.critColor }}">{{ t.crit }}</span>
+                    <span style="width:52px;text-align:right">{{ t.dur }}</span>
+                  </span>
+                </button>
+              </sc-for>
+            </div>
+          </section>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isTasks }}">
+        <div data-screen-label="Task board" style="padding:22px 22px 60px;display:flex;flex-direction:column;gap:20px;max-width:1180px">
+          <div style="display:flex;align-items:center;gap:7px;padding:3px;border-radius:9px;background:var(--s1);border:1px solid var(--bd);width:fit-content">
+            <sc-for list="{{ filters }}" as="f" hint-placeholder-count="4">
+              <button onClick="{{ f.pick }}" style="padding:6px 12px;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;background:{{ f.bg }};color:{{ f.color }}" style-hover="color:var(--tx)">{{ f.label }}</button>
+            </sc-for>
+          </div>
+
+          <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+            <section style="display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;gap:11px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:{{ g.color }}">{{ g.label }}</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">{{ g.count }}</span>
+                <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--bd2),transparent)"></span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ g.hint }}</span>
+              </div>
+              <sc-for list="{{ g.tasks }}" as="t" hint-placeholder-count="2">
+                <button onClick="{{ t.open }}" style="width:100%;text-align:left;display:flex;align-items:center;flex-wrap:wrap;gap:14px;padding:13px 16px;border:1px solid var(--bd);border-left:2px solid {{ t.rail }};border-radius:var(--rad);background:linear-gradient(180deg,var(--s2),var(--s1))" style-hover="border-color:var(--bd3);background:var(--s3)">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ t.glyphColor }};width:12px;{{ t.glyphAnim }}">{{ t.glyph }}</span>
+                  <div style="min-width:0;flex:1 1 240px">
+                    <div style="font-size:14.5px;font-weight:500;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ t.title }}</div>
+                    <div style="display:flex;align-items:center;gap:7px;margin-top:4px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">
+                      <span style="color:var(--tx3)">{{ t.repo }}</span><span>/</span><span>{{ t.branch }}</span>
+                      <span style="color:var(--tx4)">·</span>
+                      <span>{{ t.id }}</span>
+                    </div>
+                  </div>
+                  <div style="flex:0 0 auto;display:flex;align-items:center;gap:16px">
+                    <div style="width:152px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.step }}</div>
+                    <div style="width:50px;display:flex;gap:3px">
+                      <sc-for list="{{ t.pips }}" as="p" hint-placeholder-count="5">
+                        <span style="width:8px;height:5px;border-radius:1px;background:{{ p.c }}"></span>
+                      </sc-for>
+                    </div>
+                    <div style="width:92px;display:flex;align-items:center;gap:7px">
+                      <div style="flex:1;height:4px;border-radius:3px;background:var(--s4);overflow:hidden">
+                        <div style="height:100%;background:{{ t.ctxColor }};width:{{ t.ctxPct }}%;transition:width .9s linear"></div>
+                      </div>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ t.ctxColor }};width:32px;text-align:right">{{ t.ctxLabel }}</span>
+                    </div>
+                    <div style="width:74px;text-align:right;font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ t.qColor }}">{{ t.qLabel }}</div>
+                    <div style="width:50px;text-align:right;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">{{ t.dur }}</div>
+                  </div>
+                </button>
+              </sc-for>
+            </section>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isTask }}">
+        <div data-screen-label="Task detail" style="padding:0 0 60px">
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 22px;border-bottom:1px solid var(--bd);background:var(--s1)">
+            <button onClick="{{ goTasks }}" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx3)" style-hover="color:var(--tx)">← tasks</button>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">/</span>
+            <span style="font-size:14px;font-weight:500;color:var(--tx)">{{ at.title }}</span>
+            <span style="display:flex;align-items:center;gap:7px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;padding:2px 8px;border-radius:20px;border:1px solid {{ at.stateBd }};background:{{ at.stateBg }};color:{{ at.stateColor }};text-transform:uppercase;letter-spacing:.06em">{{ at.state }}</span>
+            <div style="margin-left:auto;display:flex;gap:8px">
+              <button onClick="{{ at.pause }}" style="padding:6px 12px;border-radius:7px;border:1px solid var(--bd2);font-size:12.5px;color:var(--tx2)" style-hover="border-color:var(--bd3);color:var(--tx)">Pause</button>
+              <button onClick="{{ at.copy }}" style="padding:6px 12px;border-radius:7px;border:1px solid var(--acbd);background:var(--acbg);color:var(--ac);font-family:'IBM Plex Mono',monospace;font-size:12px" style-hover="border-color:var(--ac)">{{ at.attachLabel }}</button>
+            </div>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:20px;padding:20px 22px;align-items:flex-start">
+
+            <div style="flex:999 1 430px;min-width:0;display:flex;flex-direction:column;gap:16px">
+              <div style="display:flex;gap:2px;border-bottom:1px solid var(--bd)">
+                <sc-for list="{{ tabs }}" as="tb" hint-placeholder-count="5">
+                  <button onClick="{{ tb.pick }}" style="padding:9px 14px;font-size:13px;color:{{ tb.color }};border-bottom:2px solid {{ tb.bar }};margin-bottom:-1px;display:flex;align-items:center;gap:7px" style-hover="color:var(--tx)">
+                    <span>{{ tb.label }}</span>
+                    <sc-if value="{{ tb.count }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4)">{{ tb.count }}</span></sc-if>
+                  </button>
+                </sc-for>
+              </div>
+
+              <sc-if value="{{ tabSteps }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <sc-for list="{{ at.steps }}" as="s" hint-placeholder-count="3">
+                    <div style="border:1px solid var(--bd);border-radius:var(--rad);background:linear-gradient(180deg,var(--s2),var(--s1));overflow:hidden">
+                      <div style="display:flex;align-items:center;gap:11px;padding:12px 15px">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);width:16px">{{ s.n }}</span>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;color:var(--tx);font-weight:500">{{ s.skill }}</span>
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;padding:1px 7px;border-radius:4px;background:var(--s3);border:1px solid var(--bd);color:var(--tx3)">{{ s.allow }}</span>
+                        <span style="margin-left:auto;display:flex;align-items:center;gap:12px;font-family:'IBM Plex Mono',monospace;font-size:11px">
+                          <span style="color:var(--tx4)">{{ s.meta }}</span>
+                          <span style="color:{{ s.statusColor }};text-transform:uppercase;letter-spacing:.05em">{{ s.status }}</span>
+                        </span>
+                      </div>
+                      <sc-if value="{{ s.hasGens }}" hint-placeholder-val="{{ true }}">
+                        <div style="padding:0 15px 12px;display:flex;flex-direction:column;gap:7px">
+                          <div style="display:flex;align-items:center;gap:7px">
+                            <sc-for list="{{ s.gens }}" as="g" hint-placeholder-count="1">
+                              <div style="flex:{{ g.flex }};min-width:0">
+                                <div style="height:22px;border-radius:5px;border:1px solid {{ g.bd }};background:var(--s3);overflow:hidden;position:relative">
+                                  <div style="position:absolute;inset:0 auto 0 0;width:{{ g.pct }}%;background:{{ g.fill }};transition:width .9s linear"></div>
+                                  <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:{{ g.label2Color }}">{{ g.label }}</div>
+                                </div>
+                              </div>
+                              <sc-if value="{{ g.arrow }}">
+                                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex:0 0 auto">→</span>
+                              </sc-if>
+                            </sc-for>
+                          </div>
+                          <sc-if value="{{ s.handoff }}" hint-placeholder-val="{{ true }}">
+                            <div style="border:1px solid var(--bd2);border-left:2px solid var(--acbd);border-radius:8px;background:rgba(242,168,59,.04);overflow:hidden">
+                              <button onClick="{{ s.toggle }}" style="width:100%;display:flex;align-items:center;gap:9px;padding:9px 12px;text-align:left">
+                                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ac)">handoff → gen 2</span>
+                                <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ s.handoffMeta }}</span>
+                                <span style="margin-left:auto;color:var(--tx3);font-size:10px">{{ s.caret }}</span>
+                              </button>
+                              <sc-if value="{{ s.handoffOpen }}" hint-placeholder-val="{{ true }}">
+                                <div style="padding:0 13px 12px;display:flex;flex-direction:column;gap:8px">
+                                  <sc-for list="{{ s.handoffLines }}" as="h" hint-placeholder-count="3">
+                                    <div style="display:flex;gap:9px">
+                                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--tx4);flex:0 0 84px;padding-top:2px">{{ h.k }}</span>
+                                      <span style="font-size:12.5px;color:var(--tx2);line-height:1.5;max-width:70ch;text-wrap:pretty">{{ h.v }}</span>
+                                    </div>
+                                  </sc-for>
+                                </div>
+                              </sc-if>
+                            </div>
+                          </sc-if>
+                          <sc-if value="{{ s.note }}">
+                            <div style="font-size:12.5px;color:var(--tx3);padding-left:2px">{{ s.noteText }}</div>
+                          </sc-if>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+
+                <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+                  <div style="display:flex;align-items:center;gap:10px;padding:11px 15px;border-bottom:1px solid var(--bd);background:rgba(0,0,0,.2)">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)">completion criteria</span>
+                    <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">{{ at.critSummary }}</span>
+                  </div>
+                  <sc-for list="{{ at.criteria }}" as="c" hint-placeholder-count="5">
+                    <div style="display:flex;align-items:flex-start;gap:12px;padding:12px 15px;border-bottom:1px solid var(--bd)">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ c.color }};width:12px;padding-top:1px">{{ c.glyph }}</span>
+                      <div style="flex:1;min-width:0">
+                        <div style="font-size:13.5px;color:var(--tx);line-height:1.45;text-wrap:pretty">{{ c.text }}</div>
+                        <div style="display:flex;align-items:center;gap:9px;margin-top:5px;font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex-wrap:wrap">
+                          <span style="padding:1px 6px;border-radius:4px;border:1px solid var(--bd2);color:var(--tx3)">{{ c.method }}</span>
+                          <span>{{ c.cmd }}</span>
+                        </div>
+                      </div>
+                      <div style="flex:0 0 auto;text-align:right;display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:{{ c.color }}">{{ c.status }}</span>
+                        <sc-if value="{{ c.evidence }}">
+                          <button style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3);border-bottom:1px dotted var(--bd3)" style-hover="color:var(--ac);border-color:var(--ac)">{{ c.evidence }}</button>
+                        </sc-if>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ tabContract }}">
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <div style="display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:var(--rad);border:1px solid var(--bd2);background:var(--s2)">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ at.contractLock }}</span>
+                    <button style="margin-left:auto;padding:5px 11px;border-radius:6px;border:1px solid var(--bd2);font-size:12px;color:var(--tx3)" style-hover="border-color:var(--bd3);color:var(--tx)">Edit at next boundary</button>
+                  </div>
+                  <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+                    <sc-for list="{{ at.contract }}" as="c" hint-placeholder-count="6">
+                      <div style="display:flex;gap:16px;padding:13px 16px;border-bottom:1px solid var(--bd)">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--tx4);flex:0 0 118px;padding-top:2px">{{ c.k }}</span>
+                        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:5px">
+                          <sc-for list="{{ c.lines }}" as="l" hint-placeholder-count="2">
+                            <div style="font-family:{{ l.font }};font-size:{{ l.size }};color:{{ l.color }};line-height:1.5;text-wrap:pretty">{{ l.t }}</div>
+                          </sc-for>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">
+                    <span>~/.firstmate/tasks/t_a1e5/contract.md</span>
+                    <span>·</span>
+                    <span>2 amendments from answered questions</span>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ tabChanges }}">
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <div style="display:flex;align-items:center;gap:16px;padding:11px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:var(--s2);font-family:'IBM Plex Mono',monospace;font-size:11.5px">
+                    <span style="color:var(--tx3)">5 files</span>
+                    <span style="color:var(--ok)">+275</span>
+                    <span style="color:var(--bad)">−12</span>
+                    <span style="margin-left:auto;color:var(--tx4)">eng-529-scoring · 3 commits · merge-ready when criteria pass</span>
+                  </div>
+                  <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-start">
+                    <div style="flex:1 1 270px;min-width:0;border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+                      <sc-for list="{{ at.files }}" as="f" hint-placeholder-count="5">
+                        <button onClick="{{ f.pick }}" style="width:100%;text-align:left;padding:10px 12px;border-bottom:1px solid var(--bd);background:{{ f.bg }};display:flex;flex-direction:column;gap:3px" style-hover="background:var(--s3)">
+                          <div style="display:flex;align-items:baseline;gap:6px">
+                            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">{{ f.dir }}</span>
+                            <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ f.nameColor }};font-weight:500">{{ f.name }}</span>
+                          </div>
+                          <div style="display:flex;gap:9px;font-family:'IBM Plex Mono',monospace;font-size:10.5px">
+                            <span style="color:{{ f.addColor }}">{{ f.add }}</span>
+                            <span style="color:{{ f.delColor }}">{{ f.del }}</span>
+                            <sc-if value="{{ f.flag }}"><span style="color:var(--ac)">{{ f.flag }}</span></sc-if>
+                          </div>
+                        </button>
+                      </sc-for>
+                    </div>
+                    <div style="flex:999 1 420px;min-width:0;border:1px solid var(--bd);border-radius:var(--rad);background:#07070a;overflow:hidden">
+                      <div style="padding:9px 13px;border-bottom:1px solid var(--bd);font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3);background:var(--s1)">{{ at.diffPath }}</div>
+                      <div style="padding:8px 0">
+                        <sc-for list="{{ at.diff }}" as="d" hint-placeholder-count="10">
+                          <div style="display:flex;font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.65;background:{{ d.bg }}">
+                            <span style="flex:0 0 46px;text-align:right;padding-right:11px;color:var(--tx4)">{{ d.n }}</span>
+                            <span style="flex:0 0 14px;color:{{ d.mc }}">{{ d.m }}</span>
+                            <span style="color:{{ d.c }};white-space:pre;overflow:hidden">{{ d.t }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ tabOutput }}">
+                <div style="display:flex;flex-direction:column;gap:12px">
+                  <div style="display:flex;align-items:center;gap:12px;padding:10px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:var(--s2);font-family:'IBM Plex Mono',monospace;font-size:11px">
+                    <span style="width:6px;height:6px;border-radius:50%;background:var(--ok);animation:fmpulse 1.8s ease-in-out infinite"></span>
+                    <span style="color:var(--tx2)">firstmate:worker-2 · gen 2 · pane capture</span>
+                    <span style="margin-left:auto;color:var(--tx4)">read-only · tmux owns the terminal</span>
+                  </div>
+                  <div style="border:1px solid var(--bd);border-radius:var(--rad);background:#07070a;padding:14px 16px;min-height:340px;display:flex;flex-direction:column;gap:2px">
+                    <sc-for list="{{ at.output }}" as="l" hint-placeholder-count="12">
+                      <div style="display:flex;gap:12px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.6">
+                        <span style="color:#33333c;flex:0 0 52px">{{ l.ts }}</span>
+                        <span style="color:{{ l.c }};white-space:pre-wrap">{{ l.t }}</span>
+                      </div>
+                    </sc-for>
+                    <div style="display:flex;gap:12px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;margin-top:2px">
+                      <span style="color:#33333c;flex:0 0 52px"></span>
+                      <span style="width:7px;height:14px;background:var(--ac);animation:fmblink 1.1s step-end infinite"></span>
+                    </div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:12px;padding:12px 15px;border-radius:var(--rad);border:1px dashed var(--bd2);background:var(--s1)">
+                    <div style="display:flex;flex-direction:column;gap:3px">
+                      <span style="font-size:12.5px;color:var(--tx2)">Need to drive it yourself?</span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4)">attaches to the live tmux window — the session keeps running when you detach</span>
+                    </div>
+                    <button onClick="{{ at.copy }}" style="margin-left:auto;padding:8px 13px;border-radius:7px;border:1px solid var(--acbd);background:var(--acbg);color:var(--ac);font-family:'IBM Plex Mono',monospace;font-size:12px" style-hover="border-color:var(--ac)">{{ at.attachLabel }}</button>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ tabQuestions }}">
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <sc-for list="{{ at.history }}" as="h" hint-placeholder-count="3">
+                    <div style="border:1px solid var(--bd);border-left:2px solid {{ h.rail }};border-radius:var(--rad);background:var(--s1);padding:13px 15px;display:flex;flex-direction:column;gap:7px">
+                      <div style="display:flex;align-items:center;gap:10px">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:{{ h.chipColor }}">{{ h.type }}</span>
+                        <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ h.when }}</span>
+                      </div>
+                      <div style="font-size:13.5px;color:var(--tx2);line-height:1.5;max-width:74ch;text-wrap:pretty">{{ h.q }}</div>
+                      <div style="display:flex;align-items:center;gap:9px;font-family:'IBM Plex Mono',monospace;font-size:11px">
+                        <span style="color:var(--tx4)">answered</span>
+                        <span style="color:{{ h.aColor }}">{{ h.a }}</span>
+                        <span style="color:var(--tx4)">· {{ h.via }}</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+
+            <div style="flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px">
+              <sc-if value="{{ at.hasQuestion }}">
+                <div style="border:1px solid var(--acbd);border-radius:var(--rad);background:linear-gradient(180deg,rgba(242,168,59,.09),var(--s1));overflow:hidden">
+                  <div style="display:flex;align-items:center;gap:9px;padding:10px 14px;border-bottom:1px solid var(--acbd)">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ac)">needs you</span>
+                    <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ at.qAge }}</span>
+                  </div>
+                  <div style="padding:13px 14px;display:flex;flex-direction:column;gap:11px">
+                    <div style="font-size:13.5px;line-height:1.5;color:var(--tx);text-wrap:pretty">{{ at.qBody }}</div>
+                    <div style="display:flex;flex-direction:column;gap:6px">
+                      <sc-for list="{{ at.qOptions }}" as="o" hint-placeholder-count="3">
+                        <button onClick="{{ o.pick }}" style="text-align:left;padding:8px 12px;border-radius:7px;border:1px solid {{ o.bd }};background:{{ o.bg }};color:{{ o.color }};font-size:12.5px" style-hover="border-color:var(--ac);color:var(--ac)">{{ o.label }}</button>
+                      </sc-for>
+                    </div>
+                    <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);line-height:1.6">{{ at.qFoot }}</div>
+                  </div>
+                </div>
+              </sc-if>
+
+              <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+                <div style="padding:10px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:9px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)">session</span>
+                  <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ at.id }}</span>
+                </div>
+                <div style="padding:13px 14px;display:flex;flex-direction:column;gap:12px">
+                  <sc-for list="{{ at.meta }}" as="m" hint-placeholder-count="4">
+                    <div style="display:flex;flex-direction:column;gap:3px">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--tx4)">{{ m.k }}</span>
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:{{ m.color }}">{{ m.v }}</span>
+                      <sc-if value="{{ m.sub }}"><span style="font-size:11.5px;color:var(--tx3)">{{ m.sub }}</span></sc-if>
+                    </div>
+                  </sc-for>
+                  <div style="display:flex;flex-direction:column;gap:6px;padding-top:11px;border-top:1px solid var(--bd)">
+                    <div style="display:flex;justify-content:space-between;font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--tx4)">
+                      <span>live context</span>
+                      <span style="color:{{ at.ctxColor }}">{{ at.ctxLabel }}</span>
+                    </div>
+                    <div style="height:6px;border-radius:3px;background:var(--s4);overflow:hidden;position:relative">
+                      <div style="height:100%;background:{{ at.ctxColor }};width:{{ at.ctxPct }}%;transition:width .9s linear"></div>
+                      <span style="position:absolute;top:-2px;bottom:-2px;left:85%;width:1px;background:var(--bd3)"></span>
+                    </div>
+                    <div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">relay fires at 85% · pre-compaction hook blocks auto-compact</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);padding:13px 14px;display:flex;flex-direction:column;gap:9px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)">worktree</span>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.6;word-break:break-all;color:var(--tx2)">{{ at.worktree }}</div>
+                <div style="display:flex;gap:14px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">
+                  <span>3 commits</span><span>clean index</span><span>no remote push</span>
+                </div>
+              </div>
+
+              <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+                <div style="padding:10px 14px;border-bottom:1px solid var(--bd);font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)">memory injected</div>
+                <div style="padding:11px 14px;display:flex;flex-direction:column;gap:9px">
+                  <sc-for list="{{ at.injected }}" as="i" hint-placeholder-count="3">
+                    <div style="display:flex;gap:8px">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);flex:0 0 auto">{{ i.d }}</span>
+                      <span style="font-size:12px;color:var(--tx2);line-height:1.45;text-wrap:pretty">{{ i.t }}</span>
+                    </div>
+                  </sc-for>
+                  <button onClick="{{ goMemory }}" style="align-self:flex-start;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)" style-hover="color:var(--ac)">all memory →</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isInbox }}">
+        <div data-screen-label="Inbox" style="padding:22px 22px 60px;max-width:1020px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;align-items:center;gap:14px;padding:12px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:var(--s2)">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx2)">{{ inboxSummary }}</span>
+            <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">non-blocking questions batch at step boundaries · blocking pages slack immediately</span>
+          </div>
+
+          <sc-for list="{{ inbox }}" as="q" hint-placeholder-count="4">
+            <article style="border:1px solid {{ q.bd }};border-left:2px solid {{ q.rail }};border-radius:var(--rad);background:linear-gradient(180deg,var(--s2),var(--s1));overflow:hidden">
+              <div style="display:flex;align-items:center;gap:10px;padding:10px 15px;border-bottom:1px solid var(--bd);background:rgba(0,0,0,.18)">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 7px;border-radius:4px;background:{{ q.chipBg }};color:{{ q.chipColor }};border:1px solid {{ q.chipBd }}">{{ q.type }}</span>
+                <sc-if value="{{ q.urgent }}">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--ac)">blocking</span>
+                </sc-if>
+                <button onClick="{{ q.openTask }}" style="font-size:13px;color:var(--tx2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" style-hover="color:var(--tx);text-decoration:underline">{{ q.taskTitle }}</button>
+                <span style="margin-left:auto;display:flex;align-items:center;gap:10px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">
+                  <span>{{ q.id }}</span>
+                  <span>{{ q.age }} ago</span>
+                </span>
+              </div>
+              <sc-if value="{{ q.open }}" hint-placeholder-val="{{ true }}">
+                <div style="padding:15px">
+                  <div style="font-size:14.5px;line-height:1.5;color:var(--tx);max-width:76ch;text-wrap:pretty">{{ q.body }}</div>
+                  <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:11px">
+                    <sc-for list="{{ q.evidence }}" as="e" hint-placeholder-count="3">
+                      <span style="display:inline-flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;padding:3px 8px;border-radius:5px;background:var(--s3);border:1px solid var(--bd)">
+                        <span style="color:var(--tx4)">{{ e.k }}</span>
+                        <span style="color:{{ e.color }}">{{ e.v }}</span>
+                      </span>
+                    </sc-for>
+                  </div>
+                  <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:14px">
+                    <sc-for list="{{ q.options }}" as="o" hint-placeholder-count="3">
+                      <button onClick="{{ o.pick }}" style="padding:8px 14px;border-radius:7px;border:1px solid {{ o.bd }};background:{{ o.bg }};color:{{ o.color }};font-size:13px;font-weight:500" style-hover="border-color:var(--ac);color:var(--ac)">{{ o.label }}</button>
+                    </sc-for>
+                  </div>
+                  <sc-if value="{{ q.amend }}">
+                    <div style="display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--s3);border:1px solid var(--bd2)">
+                      <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ q.amendText }}</span>
+                      <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">appended to contract.md on answer</span>
+                    </div>
+                  </sc-if>
+                  <div style="display:flex;align-items:center;gap:14px;margin-top:13px;padding-top:12px;border-top:1px solid var(--bd);font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);flex-wrap:wrap">
+                    <span>default in {{ q.defIn }} → {{ q.def }}</span>
+                    <span>{{ q.parked }}</span>
+                    <span style="margin-left:auto;color:var(--tx3)">fm answer {{ q.id }} 1</span>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ q.resolved }}">
+                <div style="padding:14px 15px;display:flex;align-items:center;gap:11px;background:var(--okbg)">
+                  <span style="font-family:'IBM Plex Mono',monospace;color:var(--ok);font-size:13px">✓</span>
+                  <div style="display:flex;flex-direction:column;gap:2px">
+                    <span style="font-size:13px;color:var(--tx)">{{ q.chosen }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)">{{ q.after }}</span>
+                  </div>
+                </div>
+              </sc-if>
+            </article>
+          </sc-for>
+
+          <sc-if value="{{ inboxEmpty }}">
+            <div style="padding:40px;border:1px dashed var(--bd2);border-radius:var(--rad);text-align:center;display:flex;flex-direction:column;gap:7px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--tx2)">queue empty</span>
+              <span style="font-size:12.5px;color:var(--tx4)">Every answer went to the contract. Parked tasks have resumed.</span>
+            </div>
+          </sc-if>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isMemory }}">
+        <div data-screen-label="Memory" style="padding:22px 22px 60px;max-width:960px;display:flex;flex-direction:column;gap:18px">
+          <div style="display:flex;align-items:center;gap:14px;padding:12px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:var(--s2);font-family:'IBM Plex Mono',monospace;font-size:11.5px">
+            <span style="color:var(--tx2)">~/.firstmate/memory/{{ project }}.md</span>
+            <span style="margin-left:auto;color:var(--tx4)">{{ memMeta }}</span>
+          </div>
+
+          <sc-if value="{{ hasPending }}" hint-placeholder-val="{{ true }}">
+            <section style="display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;align-items:center;gap:11px">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ac)">promote to memory?</span>
+                <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--acbd),transparent)"></span>
+              </div>
+              <sc-for list="{{ pending }}" as="p" hint-placeholder-count="1">
+                <div style="border:1px solid var(--acbd);border-radius:var(--rad);background:rgba(242,168,59,.05);padding:14px 15px;display:flex;align-items:flex-start;gap:14px">
+                  <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+                    <span style="font-size:14px;color:var(--tx);line-height:1.5;text-wrap:pretty">{{ p.text }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ p.why }}</span>
+                  </div>
+                  <div style="display:flex;gap:7px;flex:0 0 auto">
+                    <button onClick="{{ p.accept }}" style="padding:7px 12px;border-radius:7px;border:1px solid var(--acbd);background:var(--acbg);color:var(--ac);font-size:12.5px;font-weight:500" style-hover="border-color:var(--ac)">Promote</button>
+                    <button onClick="{{ p.dismiss }}" style="padding:7px 12px;border-radius:7px;border:1px solid var(--bd2);color:var(--tx3);font-size:12.5px" style-hover="color:var(--tx)">Dismiss</button>
+                  </div>
+                </div>
+              </sc-for>
+            </section>
+          </sc-if>
+
+          <section style="display:flex;flex-direction:column;gap:9px">
+            <div style="display:flex;align-items:center;gap:11px">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx2)">durable memory</span>
+              <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--bd2),transparent)"></span>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">injected into every session at start</span>
+            </div>
+            <div style="border:1px solid var(--bd);border-radius:var(--rad);background:var(--s1);overflow:hidden">
+              <sc-for list="{{ memory }}" as="m" hint-placeholder-count="4">
+                <div style="display:flex;gap:14px;padding:14px 16px;border-bottom:1px solid var(--bd)" style-hover="background:var(--s2)">
+                  <div style="flex:0 0 92px;display:flex;flex-direction:column;gap:4px">
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx3)">{{ m.date }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:{{ m.srcColor }}">{{ m.src }}</span>
+                  </div>
+                  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:5px">
+                    <span style="font-size:14px;color:var(--tx);line-height:1.5;text-wrap:pretty">{{ m.text }}</span>
+                    <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4)">{{ m.prov }}</span>
+                  </div>
+                  <span style="flex:0 0 auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);padding-top:2px">{{ m.hits }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+
+          <div style="display:flex;gap:9px;align-items:center;padding:12px;border-radius:var(--rad);border:1px solid var(--bd2);background:var(--s2)">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--tx4);flex:0 0 auto">fm remember</span>
+            <input value="{{ draftMem }}" onChange="{{ onDraftMem }}" onKeyDown="{{ onDraftKey }}" placeholder="a project fact that would have saved a session time…" style="flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--tx);font-size:13.5px" />
+            <button onClick="{{ addMem }}" style="padding:7px 13px;border-radius:7px;border:1px solid var(--acbd);background:var(--acbg);color:var(--ac);font-size:12.5px;font-weight:500;flex:0 0 auto" style-hover="border-color:var(--ac)">Append</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isNew }}">
+        <div data-screen-label="New task" style="padding:22px 22px 60px;max-width:840px;display:flex;flex-direction:column;gap:16px">
+          <div style="display:flex;align-items:center;gap:12px;padding:11px 15px;border-radius:var(--rad);border:1px solid var(--bd);background:var(--s2);font-family:'IBM Plex Mono',monospace;font-size:11px">
+            <span style="width:6px;height:6px;border-radius:50%;background:var(--ac)"></span>
+            <span style="color:var(--tx2)">scoping session · {{ project }}</span>
+            <span style="margin-left:auto;color:var(--tx4)">reads memory + repo first · refuses vague criteria</span>
+          </div>
+
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <sc-for list="{{ chat }}" as="c" hint-placeholder-count="4">
+              <div style="display:flex;gap:14px;animation:fmrise .3s ease both">
+                <div style="flex:0 0 74px;padding-top:2px">
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:{{ c.whoColor }}">{{ c.who }}</span>
+                </div>
+                <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:9px">
+                  <sc-for list="{{ c.blocks }}" as="b" hint-placeholder-count="1">
+                    <div style="font-family:{{ b.font }};font-size:{{ b.size }};color:{{ b.color }};line-height:1.6;max-width:70ch;text-wrap:pretty;padding-left:{{ b.indent }}">{{ b.t }}</div>
+                  </sc-for>
+                  <sc-if value="{{ c.contract }}">
+                    <div style="border:1px solid var(--bd2);border-radius:var(--rad);background:var(--s1);overflow:hidden;margin-top:2px">
+                      <div style="padding:9px 14px;border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:9px">
+                        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3)">contract</span>
+                        <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--ok)">5 criteria · all machine-checkable</span>
+                      </div>
+                      <div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px">
+                        <sc-for list="{{ contractRows }}" as="r" hint-placeholder-count="6">
+                          <div style="display:flex;gap:14px">
+                            <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex:0 0 66px">{{ r.k }}</span>
+                            <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:{{ r.color }};line-height:1.55;flex:1;min-width:0">{{ r.v }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{ showApprove }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;align-items:center;gap:9px;padding-left:88px">
+              <button onClick="{{ approve }}" style="padding:9px 16px;border-radius:8px;border:1px solid var(--acbd);background:var(--acbg);color:var(--ac);font-size:13px;font-weight:500" style-hover="border-color:var(--ac);background:rgba(242,168,59,.16)">Approve and run</button>
+              <button onClick="{{ pushBack }}" style="padding:9px 14px;border-radius:8px;border:1px solid var(--bd2);color:var(--tx2);font-size:13px" style-hover="border-color:var(--bd3);color:var(--tx)">Edit contract</button>
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);margin-left:4px">then nothing downstream is interactive by default</span>
+            </div>
+          </sc-if>
+
+          <div style="display:flex;gap:10px;align-items:center;padding:12px 14px;border-radius:var(--rad);border:1px solid var(--bd2);background:var(--s2);margin-left:88px">
+            <input value="{{ draftChat }}" onChange="{{ onDraftChat }}" onKeyDown="{{ onChatKey }}" placeholder="push back, add a constraint, or approve…" style="flex:1;min-width:0;background:transparent;border:0;outline:none;color:var(--tx);font-size:13.5px" />
+            <button onClick="{{ sendChat }}" style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ac);flex:0 0 auto" style-hover="text-decoration:underline">send ↵</button>
+          </div>
+        </div>
+      </sc-if>
+
+    </div>
+  </main>
+
+  <sc-if value="{{ paletteOpen }}">
+    <div style="position:fixed;inset:0;z-index:90;background:rgba(4,4,6,.7);backdrop-filter:blur(3px);display:flex;align-items:flex-start;justify-content:center;padding-top:14vh" onClick="{{ closePalette }}">
+      <div style="width:560px;max-width:92vw;border:1px solid var(--bd2);border-radius:12px;background:linear-gradient(180deg,var(--s3),var(--s1));box-shadow:0 30px 80px rgba(0,0,0,.7);overflow:hidden" onClick="{{ stop }}">
+        <div style="display:flex;align-items:center;gap:11px;padding:13px 16px;border-bottom:1px solid var(--bd)">
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ac)">fm</span>
+          <input value="{{ pq }}" onChange="{{ onPq }}" onKeyDown="{{ onPqKey }}" placeholder="jump to a task, answer a question, run a command…" style="flex:1;background:transparent;border:0;outline:none;color:var(--tx);font-size:14px" />
+          <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--tx4);border:1px solid var(--bd2);border-radius:4px;padding:1px 5px">esc</span>
+        </div>
+        <div style="max-height:340px;overflow-y:auto;padding:6px">
+          <sc-for list="{{ paletteItems }}" as="p" hint-placeholder-count="5">
+            <button onClick="{{ p.run }}" style="width:100%;display:flex;align-items:center;gap:12px;padding:9px 11px;border-radius:8px;text-align:left;background:{{ p.bg }}" style-hover="background:var(--s4)">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--tx4);flex:0 0 62px">{{ p.kind }}</span>
+              <span style="font-size:13px;color:var(--tx);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ p.label }}</span>
+              <span style="margin-left:auto;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx4);flex:0 0 auto">{{ p.hint }}</span>
+            </button>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ toast }}">
+    <div style="position:fixed;right:22px;bottom:22px;z-index:95;display:flex;align-items:center;gap:12px;padding:12px 15px;border-radius:10px;border:1px solid var(--bd2);background:linear-gradient(180deg,var(--s3),var(--s2));box-shadow:0 18px 44px rgba(0,0,0,.6);animation:fmrise .25s ease both;max-width:420px">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:{{ toastColor }}">{{ toastGlyph }}</span>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <span style="font-size:13px;color:var(--tx)">{{ toast }}</span>
+        <sc-if value="{{ toastSub }}"><span style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--tx3)">{{ toastSub }}</span></sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;accent&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#f2a83b&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;#f2a83b&quot;,&quot;#7f9cf5&quot;,&quot;#7fb894&quot;,&quot;#e0776b&quot;],&quot;section&quot;:&quot;Theme&quot;},&quot;density&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;balanced&quot;,&quot;options&quot;:[&quot;compact&quot;,&quot;balanced&quot;,&quot;spacious&quot;],&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Theme&quot;},&quot;liveSimulation&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
+const MONO = "'IBM Plex Mono',monospace";
+const SANS = "'IBM Plex Sans',sans-serif";
+
+const OUT_POOL = [
+  ["tool", "Edit  src/scoring/breakdown.ts"],
+  ["dim", "  applied · 18 lines"],
+  ["dim", "Read  src/scoring/scoreKeyword.ts (412 lines)"],
+  ["tool", "Bash  pnpm test scoring --changed"],
+  ["ok", "  18 passed · 0 failed · 2.4s"],
+  ["dim", "thinking about the v3 dispatch path…"],
+  ["tool", "Edit  src/scoring/__tests__/dispatch.test.ts"],
+  ["dim", "  applied · 12 lines"],
+  ["ac", "Guard  write blocked: src/workflows/searchDemand.ts"],
+  ["ac", "  raising scope_change question q_9f2 · parking"],
+  ["dim", "Read  supabase/migrations/20260817_add_rsv.sql"],
+  ["ok", "  criterion 1 satisfied (diff constraint)"]
+];
+
+class Component extends DCLogic {
+  state = {
+    view: "now",
+    taskId: "t_a1e5",
+    tab: "steps",
+    filter: "all",
+    tick: 0,
+    ctx: { t_a1e5: 62.0, t_b7c2: 89.0, t_e8b3: 41.0 },
+    outIdx: 6,
+    projOpen: false,
+    project: "reach-platform",
+    paletteOpen: false,
+    pq: "",
+    copied: "",
+    handoffOpen: true,
+    diffFile: "src/scoring/scoreKeyword.ts",
+    draftMem: "",
+    draftChat: "",
+    toast: null,
+    toastSub: null,
+    toastKind: "ok",
+    approved: false,
+    resolved: {},
+    hidden: {},
+    promoted: false,
+    dismissed: false,
+    extraMem: [],
+    extraChat: [],
+    tasks: {
+      t_a1e5: { id: "t_a1e5", title: "Fix relevance scoring coverage gaps in ENG-529", repo: "reach-platform", branch: "eng-529-scoring", state: "running", step: "implement · phase 2", gen: 2, crit: [1, 1, 1, 0, 0], q: 1, dur: "1h04m" },
+      t_b7c2: { id: "t_b7c2", title: "Add Framer adapter to the publishing engine", repo: "reach-platform", branch: "publish-framer", state: "blocked", step: "implement · phase 1", gen: 1, crit: [1, 0, 0, 0], q: 1, dur: "38m" },
+      t_e8b3: { id: "t_e8b3", title: "Migrate the question queue to SQLite WAL", repo: "firstmate", branch: "queue-wal", state: "validating", step: "review · 4 checks", gen: 1, crit: [1, 1, 1, 2], q: 1, dur: "22m" },
+      t_c3f9: { id: "t_c3f9", title: "Transcribe and package the August ABSC session", repo: "absc", branch: "absc-aug-wk3", state: "ready", step: "not started", gen: 0, crit: [0, 0, 0], q: 0, dur: "—" },
+      t_f2d7: { id: "t_f2d7", title: "Backfill embeddings for archived posts", repo: "reach-platform", branch: "embed-backfill", state: "failed", step: "implement · escalated", gen: 3, crit: [1, 1, 3], q: 0, dur: "2h51m" },
+      t_d4a1: { id: "t_d4a1", title: "Layer model: correct feed-cost curve by cycle", repo: "kima-tools", branch: "fertigation-v6", state: "done", step: "review · complete", gen: 1, crit: [1, 1, 1, 1], q: 0, dur: "3h30m" }
+    },
+    questions: [
+      {
+        id: "q_9f2", type: "scope_change", urgent: true, task: "t_a1e5", age: "6m",
+        body: "searchDemand.ts calls scoreKeyword inside a Temporal activity. Updating it needs a workflow version bump — and src/workflows/** is out of contract.",
+        evidence: [["blocked at", "src/workflows/searchDemand.ts:88", "tx2"], ["by", "scope guard · pre-tool-use", "ac"], ["session", "gen 2 · parked, worktree kept", "tx2"]],
+        options: ["Amend contract — add src/workflows/**", "Leave it, I'll handle it separately", "Stop — rethink the scope"],
+        def: "Stop — rethink the scope", defIn: "7h 51m", slack: true,
+        amend: "+ scope: src/workflows/** · + criterion 6: workflow version bumped when an activity changes",
+        after: ["contract amended · gen 3 spawning with the answer in context", "task resumes · worktree reused", "no change · task stays blocked"]
+      },
+      {
+        id: "q_7c1", type: "decision", urgent: true, task: "t_b7c2", age: "38m",
+        body: "Framer's publish API needs authenticated credentials to round-trip test, and no test account exists in this environment.",
+        evidence: [["at", "src/adapters/framer.ts:71", "tx2"], ["spec", "playwright/publish.spec.ts", "tx2"], ["attempt", "2 of 2 · next failure escalates", "ac"]],
+        options: ["Use my Framer account (creds in 1Password)", "Mock the API for now", "Skip round-trip, unit tests only"],
+        def: "Skip round-trip, unit tests only", defIn: "5h 20m", slack: true,
+        after: ["credentials requested · task resumes on gen 2", "criterion 3 rewritten to a mocked check", "criterion 3 dropped · noted in contract"]
+      },
+      {
+        id: "q_4b8", type: "approval", urgent: false, task: "t_e8b3", age: "12m",
+        body: "All four criteria pass, but criterion 4 was settled by a judgment call rather than a command. Mark the task done?",
+        evidence: [["criteria", "4/4 · 1 judged", "ok"], ["diff", "+402 −77 · 9 files", "tx2"], ["branch", "queue-wal · merge-ready", "tx2"]],
+        options: ["Mark it done", "Show me the judgment", "Add a real check first"],
+        def: "Show me the judgment", defIn: "2h 04m", slack: false,
+        after: ["task done · learning extraction queued", "opening the evaluation record", "task held · criterion 4 reopened"]
+      },
+      {
+        id: "q_2a0", type: "fyi", urgent: false, task: "t_d4a1", age: "2h10m",
+        body: "Assumed an 18-week pullet phase — it matches your last two models. Proceeded on that basis rather than blocking.",
+        evidence: [["at", "models/layer_model.py:44", "tx2"], ["recurrence", "3rd time across tasks", "ac"]],
+        options: ["Noted", "That's wrong — flag it"],
+        def: "Noted", defIn: "1h 12m", slack: false,
+        after: ["acknowledged · promotion suggested in memory", "flagged · review step reopened"]
+      }
+    ]
+  };
+
+  componentDidMount() {
+    if (this.props.liveSimulation === false) return;
+    this.timer = setInterval(() => {
+      this.setState(s => {
+        const ctx = { ...s.ctx };
+        ctx.t_a1e5 = Math.min(84, ctx.t_a1e5 + 0.55);
+        ctx.t_e8b3 = Math.min(70, ctx.t_e8b3 + 0.3);
+        return { tick: s.tick + 1, ctx, outIdx: (s.outIdx + 1) % OUT_POOL.length };
+      });
+    }, 1150);
+    this.key = e => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); this.setState({ paletteOpen: true, pq: "" }); }
+      if (e.key === "Escape") this.setState({ paletteOpen: false, projOpen: false });
+    };
+    window.addEventListener("keydown", this.key);
+  }
+  componentWillUnmount() { clearInterval(this.timer); window.removeEventListener("keydown", this.key); }
+
+  componentDidUpdate(prev) {
+    if (prev.accent !== this.props.accent) this.applyTheme();
+  }
+  applyTheme() {
+    const r = document.documentElement;
+    if (this.props.accent) {
+      r.style.setProperty("--ac", this.props.accent);
+      r.style.setProperty("--acbg", this.props.accent + "18");
+      r.style.setProperty("--acbd", this.props.accent + "55");
+    }
+    const d = this.props.density;
+    if (d === "compact") r.style.setProperty("--pad", "13px");
+    else if (d === "spacious") r.style.setProperty("--pad", "24px");
+  }
+
+  toast(msg, sub, kind) {
+    clearTimeout(this._tt);
+    this.setState({ toast: msg, toastSub: sub || null, toastKind: kind || "ok" });
+    this._tt = setTimeout(() => this.setState({ toast: null }), 4200);
+  }
+
+  go = v => this.setState({ view: v, projOpen: false, paletteOpen: false });
+  openTask = (id, tab) => this.setState({ view: "task", taskId: id, tab: tab || "steps", paletteOpen: false });
+
+  answer = (qid, i) => {
+    const q = this.state.questions.find(x => x.id === qid);
+    if (!q) return;
+    this.setState(s => ({ resolved: { ...s.resolved, [qid]: i } }));
+    this.toast("Answer recorded · " + q.options[i], "appended to contract.md · attributed to you · " + q.id, "ok");
+    setTimeout(() => {
+      this.setState(s => {
+        const tasks = { ...s.tasks };
+        const t = { ...tasks[q.task] };
+        if (i === 0 && t.state === "blocked") { t.state = "running"; t.gen = t.gen + 1; t.step = "implement · phase 1"; }
+        if (q.type === "approval" && i === 0) { t.state = "done"; t.step = "review · complete"; t.crit = [1, 1, 1, 1]; }
+        tasks[q.task] = t;
+        return { hidden: { ...s.hidden, [qid]: true }, tasks };
+      });
+      if (i === 0 && q.type === "scope_change") this.toast("t_a1e5 resumed on generation 3", "handoff + answer + memory injected at session start", "run");
+      if (i === 0 && q.type === "approval") this.toast("t_e8b3 marked done", "validation evidence stored · learning extraction queued", "ok");
+    }, 1500);
+  };
+
+  copy = (label, id) => {
+    const cmd = "fm attach " + id;
+    if (navigator.clipboard) navigator.clipboard.writeText(cmd).catch(() => {});
+    this.setState({ copied: id });
+    setTimeout(() => this.setState({ copied: "" }), 1600);
+  };
+
+  ctxColor(v) { return v >= 85 ? "var(--bad)" : v >= 60 ? "var(--ac)" : "var(--ok)"; }
+  critPips(arr) { return arr.map(v => ({ c: v === 1 ? "var(--ok)" : v === 2 ? "var(--ac)" : v === 3 ? "var(--bad)" : "var(--s4)" })); }
+
+  stateStyle(st) {
+    if (st === "running") return { glyph: "●", color: "var(--ok)", rail: "var(--bd)", anim: "animation:fmpulse 2.2s ease-in-out infinite;" };
+    if (st === "blocked") return { glyph: "◐", color: "var(--ac)", rail: "var(--ac)", anim: "" };
+    if (st === "validating") return { glyph: "◍", color: "var(--ac)", rail: "var(--bd)", anim: "animation:fmpulse 2.8s ease-in-out infinite;" };
+    if (st === "ready") return { glyph: "○", color: "var(--tx3)", rail: "var(--bd)", anim: "" };
+    if (st === "failed") return { glyph: "✗", color: "var(--bad)", rail: "var(--bad)", anim: "" };
+    return { glyph: "✓", color: "var(--tx3)", rail: "var(--bd)", anim: "" };
+  }
+  typeStyle(t) {
+    if (t === "scope_change") return { bg: "rgba(242,168,59,.12)", color: "var(--ac)", bd: "var(--acbd)", rail: "var(--ac)", border: "var(--acbd)" };
+    if (t === "decision") return { bg: "rgba(242,168,59,.10)", color: "var(--ac)", bd: "var(--acbd)", rail: "var(--ac)", border: "var(--acbd)" };
+    if (t === "approval") return { bg: "var(--s3)", color: "var(--tx2)", bd: "var(--bd2)", rail: "var(--bd3)", border: "var(--bd)" };
+    return { bg: "var(--s3)", color: "var(--tx3)", bd: "var(--bd)", rail: "var(--bd2)", border: "var(--bd)" };
+  }
+
+  liveQuestions() { return this.state.questions.filter(q => !this.state.hidden[q.id]); }
+
+  qView = (q) => {
+    const ts = this.typeStyle(q.type);
+    const ri = this.state.resolved[q.id];
+    const t = this.state.tasks[q.task];
+    return {
+      id: q.id, type: q.type.replace("_", " "), age: q.age, slack: q.slack, urgent: q.urgent,
+      taskTitle: t.title, body: q.body, def: q.def, defIn: q.defIn,
+      parked: q.type === "fyi" ? "non-blocking · batched at step boundary" : "parked · consuming no worker slot",
+      bd: ts.border, rail: ts.rail, chipBg: ts.bg, chipColor: ts.color, chipBd: ts.bd,
+      open: ri === undefined, resolved: ri !== undefined,
+      chosen: ri !== undefined ? q.options[ri] : "",
+      after: ri !== undefined ? q.after[ri] : "",
+      amend: q.type === "scope_change", amendText: q.amend,
+      evidence: q.evidence.map(e => ({ k: e[0], v: e[1], color: e[2] === "ac" ? "var(--ac)" : e[2] === "ok" ? "var(--ok)" : "var(--tx2)" })),
+      options: q.options.map((o, i) => ({
+        label: o, pick: () => this.answer(q.id, i),
+        bg: i === 0 ? "var(--acbg)" : "transparent",
+        bd: i === 0 ? "var(--acbd)" : "var(--bd2)",
+        color: i === 0 ? "var(--ac)" : "var(--tx2)"
+      })),
+      openTask: () => this.openTask(q.task, "steps")
+    };
+  };
+
+  taskView = (t) => {
+    const ss = this.stateStyle(t.state);
+    const ctx = this.state.ctx[t.id];
+    const has = ctx !== undefined && (t.state === "running" || t.state === "blocked" || t.state === "validating");
+    return {
+      id: t.id, title: t.title, repo: t.repo, branch: t.branch, step: t.step, dur: t.dur,
+      glyph: ss.glyph, glyphColor: ss.color, glyphAnim: ss.anim, rail: ss.rail,
+      genBadge: t.gen > 1 ? "gen " + t.gen : "",
+      pips: this.critPips(t.crit),
+      ctxPct: has ? ctx : 0,
+      ctxLabel: has ? Math.round(ctx) + "%" : "—",
+      ctxColor: has ? this.ctxColor(ctx) : "var(--tx4)",
+      ctxNote: !has ? "" : ctx >= 85 ? "relay imminent" : ctx >= 60 ? "elevated · relay at 85%" : "healthy",
+      crit: t.crit.filter(v => v === 1).length + "/" + t.crit.length + " criteria",
+      critColor: t.crit.every(v => v === 1) ? "var(--ok)" : t.crit.some(v => v === 3) ? "var(--bad)" : "var(--tx3)",
+      qLabel: t.q ? t.q + (t.q > 1 ? " questions" : " question") : "",
+      qColor: t.q ? "var(--ac)" : "var(--tx4)",
+      open: () => this.openTask(t.id, "steps"),
+      openOutput: () => this.openTask(t.id, "output"),
+      copy: () => this.copy("", t.id),
+      copyLabel: this.state.copied === t.id ? "copied" : "click to copy",
+      attach: "fm attach " + t.id,
+      hasOutput: t.state === "running",
+      tail: this.outputTail(3)
+    };
+  };
+
+  outputTail(n) {
+    const i = this.state.outIdx;
+    const out = [];
+    for (let k = n - 1; k >= 0; k--) {
+      const line = OUT_POOL[(i - k + OUT_POOL.length * 2) % OUT_POOL.length];
+      out.push({ t: line[1], c: line[0] === "ok" ? "var(--ok)" : line[0] === "ac" ? "var(--ac)" : line[0] === "tool" ? "#c3c3cd" : "var(--tx3)" });
+    }
+    return out;
+  }
+
+  renderVals() {
+    const s = this.state;
+    const props = this.props;
+    if (!this._themed) { this._themed = true; this.applyTheme(); }
+
+    const live = this.liveQuestions();
+    const needs = live.filter(q => q.urgent).length;
+    const order = ["t_a1e5", "t_b7c2", "t_e8b3", "t_c3f9", "t_f2d7", "t_d4a1"];
+    const all = order.map(id => s.tasks[id]);
+    const running = all.filter(t => t.state === "running").length;
+    const at = s.tasks[s.taskId] || s.tasks.t_a1e5;
+    const ctxA = s.ctx[at.id] !== undefined ? s.ctx[at.id] : 0;
+    const memory = [
+      { date: "2026-08-17", src: "system", text: "Migrations must ship with a rollback block in the same file — CI rejects one-way migrations.", prov: "extracted after implement step · t_a1e5", hits: "injected 6×" },
+      { date: "2026-08-12", src: "you", text: "v2 scoring behaviour must never change. New behaviour goes behind a version dispatch.", prov: "fm remember", hits: "injected 11×" },
+      { date: "2026-08-02", src: "promoted", text: "Editing a Temporal activity requires a workflow version bump in the same change.", prov: "promoted from q_3d1 · asked 3×", hits: "injected 9×" },
+      { date: "2026-07-28", src: "system", text: "Playwright specs live in playwright/, not tests/e2e. The runner ignores tests/e2e entirely.", prov: "extracted after review step · t_9x2", hits: "injected 14×" }
+    ].concat(s.extraMem);
+
+    const chat = [
+      { who: "you", blocks: [["Fix the relevance scoring coverage gaps in ENG-529", SANS, "14.5px", "var(--tx)", "0"]] },
+      { who: "first mate", blocks: [
+        ["Read the Linear issue and reach-platform memory. Here's the scope I'd propose — tell me what's wrong with it.", SANS, "14.5px", "var(--tx)", "0"],
+        ["Four completion criteria, all mechanically checkable:", SANS, "13.5px", "var(--tx2)", "0"],
+        ["· relevance_score_version column with migration + rollback", MONO, "12px", "var(--tx2)", "10px"],
+        ["· scoreKeyword returns a breakdown on both v2 and v3 paths", MONO, "12px", "var(--tx2)", "10px"],
+        ["· two new tests covering version dispatch", MONO, "12px", "var(--tx2)", "10px"],
+        ["· nothing changes outside src/scoring and supabase/migrations", MONO, "12px", "var(--tx2)", "10px"],
+        ["Steps: plan → implement (2 phases) → review. From memory: v2 behaviour must not change, and migrations ship with a rollback in the same file.", SANS, "13px", "var(--tx3)", "0"]
+      ] },
+      { who: "you", blocks: [["Good, but src/workflows may need touching too — searchDemand imports it.", SANS, "14.5px", "var(--tx)", "0"]] },
+      { who: "first mate", contract: true, blocks: [
+        ["Added src/workflows to scope. Memory says Temporal changes need a workflow version bump, so I've made that a fifth criterion rather than a surprise later.", SANS, "14.5px", "var(--tx)", "0"]
+      ] }
+    ].concat(s.extraChat).map(m => ({
+      who: m.who,
+      whoColor: m.who === "you" ? "var(--tx3)" : "var(--ac)",
+      contract: !!m.contract,
+      blocks: m.blocks.map(b => ({ t: b[0], font: b[1], size: b[2], color: b[3], indent: b[4] }))
+    }));
+
+    const paletteAll = all.map(t => ({ kind: "task", label: t.title, hint: t.id, run: () => this.openTask(t.id, "steps") }))
+      .concat(live.map(q => ({ kind: "answer", label: q.body.slice(0, 58) + "…", hint: q.id, run: () => this.go("inbox") })))
+      .concat([
+        { kind: "cmd", label: "fm remember — append to project memory", hint: "memory", run: () => this.go("memory") },
+        { kind: "cmd", label: "fm task — start a scoping conversation", hint: "new", run: () => this.go("new") },
+        { kind: "cmd", label: "fm status — everything at a glance", hint: "now", run: () => this.go("now") }
+      ]);
+    const pq = s.pq.trim().toLowerCase();
+    const paletteItems = (pq ? paletteAll.filter(p => (p.label + p.kind + p.hint).toLowerCase().includes(pq)) : paletteAll)
+      .slice(0, 7).map((p, i) => ({ ...p, bg: i === 0 ? "var(--s4)" : "transparent" }));
+
+    const filters = [["all", "all"], ["needs", "needs you"], ["active", "active"], ["settled", "settled"]]
+      .map(f => ({ label: f[1], pick: () => this.setState({ filter: f[0] }), bg: s.filter === f[0] ? "var(--s3)" : "transparent", color: s.filter === f[0] ? "var(--tx)" : "var(--tx3)" }));
+    const inFilter = t => s.filter === "all" ? true
+      : s.filter === "needs" ? t.q > 0 || t.state === "blocked"
+      : s.filter === "active" ? ["running", "blocked", "validating", "ready"].includes(t.state)
+      : ["done", "failed"].includes(t.state);
+    const groupDefs = [
+      ["blocked", "blocked — waiting on you", "var(--ac)", "parked · no worker slot held"],
+      ["running", "running", "var(--ok)", "live sessions, streamed"],
+      ["validating", "validating", "var(--tx2)", "criteria collected at task boundary"],
+      ["ready", "ready to run", "var(--tx2)", "contract approved, awaiting a slot"],
+      ["failed", "failed", "var(--bad)", "escalated after two attempts"],
+      ["done", "done", "var(--tx2)", "every criterion met"]
+    ];
+    const groups = groupDefs.map(g => {
+      const list = all.filter(t => t.state === g[0] && inFilter(t));
+      return { label: g[1], color: g[2], hint: g[3], count: list.length, tasks: list.map(this.taskView) };
+    }).filter(g => g.count > 0);
+
+    const gen1 = { pct: 100, flex: 22, fill: "linear-gradient(90deg,#2a2a33,#33333d)", bd: "var(--bd2)", label: "gen 1 · relayed at 100%", label2Color: "var(--tx3)", arrow: true };
+    const gen2 = { pct: ctxA, flex: 26, fill: "linear-gradient(90deg,rgba(242,168,59,.30),rgba(242,168,59,.16))", bd: "var(--acbd)", label: "gen 2 · " + Math.round(ctxA) + "% · live", label2Color: "var(--tx)", arrow: false };
+
+    const steps = [
+      { n: "01", skill: "plan", allow: "read-only", meta: "4m 12s · gen 1 · 38% ctx", status: "done", statusColor: "var(--tx3)", hasGens: true,
+        gens: [{ pct: 38, flex: 1, fill: "linear-gradient(90deg,#252530,#2c2c37)", bd: "var(--bd)", label: "gen 1 · 38% · complete", label2Color: "var(--tx3)", arrow: false }],
+        note: true, noteText: "3 phases identified · wrote plan.md · proposed 5 criteria, all machine-checkable" },
+      { n: "02", skill: "implement", allow: "scoped writes", meta: "36m · 2 generations · attempt 1", status: "running", statusColor: "var(--ok)", hasGens: true,
+        gens: [gen1, gen2], handoff: true, handoffOpen: s.handoffOpen, caret: s.handoffOpen ? "▴" : "▾",
+        handoffMeta: "written at 100% · 214 words · injected at session start",
+        toggle: () => this.setState(x => ({ handoffOpen: !x.handoffOpen })),
+        handoffLines: [
+          { k: "done", v: "Phases 1–2 complete. relevance_score_version column added with migration + rollback in one file; breakdown.ts written and exported from the scoring index." },
+          { k: "remains", v: "Phase 3 — backfill migration for existing rows, then the dispatch tests for the v3 path." },
+          { k: "gotcha", v: "searchDemand.ts imports scoreKeyword in two places. Both are updated, but the second sits inside a Temporal activity and needs a workflow version bump." },
+          { k: "files", v: "src/scoring/{scoreKeyword,breakdown}.ts · supabase/migrations/20260817_add_rsv.sql · src/scoring/__tests__/dispatch.test.ts" }
+        ] },
+      { n: "03", skill: "review", allow: "read-only", meta: "queued behind implement", status: "pending", statusColor: "var(--tx4)", hasGens: false }
+    ];
+
+    const criteria = [
+      ["relevance_score_version column exists with a matching rollback", "diff constraint", "supabase/migrations/**", 1, "view diff"],
+      ["scoreKeyword returns a breakdown on both v2 and v3 paths", "command", "pnpm test scoring", 1, "18 passed"],
+      ["two new tests cover version dispatch", "command", "pnpm test:changed", 1, "view output"],
+      ["nothing changes outside src/scoring, supabase/migrations, src/workflows", "diff constraint", "guard trip → q_9f2", 2, "1 attempt blocked"],
+      ["workflow version bumped wherever an activity changed", "command", "pnpm ts:check && pnpm wf:verify", 0, ""]
+    ].map(c => ({
+      text: c[0], method: c[1], cmd: c[2], evidence: c[4],
+      glyph: c[3] === 1 ? "✓" : c[3] === 2 ? "◐" : "○",
+      status: c[3] === 1 ? "met" : c[3] === 2 ? "blocked" : "not run",
+      color: c[3] === 1 ? "var(--ok)" : c[3] === 2 ? "var(--ac)" : "var(--tx4)"
+    }));
+
+    const files = [
+      ["supabase/migrations/", "20260817_add_rsv.sql", "+48", "−0", ""],
+      ["src/scoring/", "scoreKeyword.ts", "+61", "−12", ""],
+      ["src/scoring/", "breakdown.ts", "+94", "−0", ""],
+      ["src/scoring/__tests__/", "dispatch.test.ts", "+72", "−0", ""],
+      ["src/workflows/", "searchDemand.ts", "+0", "−0", "blocked by guard"]
+    ].map(f => ({
+      dir: f[0], name: f[1], add: f[2], del: f[3], flag: f[4],
+      pick: () => this.setState({ diffFile: f[0] + f[1] }),
+      bg: s.diffFile === f[0] + f[1] ? "var(--s3)" : "transparent",
+      nameColor: f[4] ? "var(--ac)" : "var(--tx)",
+      addColor: "var(--ok)", delColor: f[3] === "−0" ? "var(--tx4)" : "var(--bad)"
+    }));
+
+    const diff = [
+      ["118", " ", "export function scoreKeyword(kw: Keyword, opts: ScoreOpts) {", "tx"],
+      ["119", "-", "  return v2Score(kw, opts);", "del"],
+      ["120", "+", "  const version = opts.version ?? currentScoreVersion();", "add"],
+      ["121", "+", "  if (version === 3) {", "add"],
+      ["122", "+", "    const breakdown = buildBreakdown(kw, opts);", "add"],
+      ["123", "+", "    return { score: breakdown.total, version, breakdown };", "add"],
+      ["124", "+", "  }", "add"],
+      ["125", "+", "  // v2 behaviour is frozen — memory 2026-08-12", "add"],
+      ["126", "+", "  return { ...v2Score(kw, opts), version: 2 };", "add"],
+      ["127", " ", "}", "tx"]
+    ].map(d => ({
+      n: d[0], m: d[1], t: d[2],
+      bg: d[3] === "add" ? "rgba(107,179,137,.07)" : d[3] === "del" ? "rgba(207,107,96,.07)" : "transparent",
+      c: d[3] === "add" ? "#b8d9c4" : d[3] === "del" ? "#d9b3ae" : "var(--tx2)",
+      mc: d[3] === "add" ? "var(--ok)" : d[3] === "del" ? "var(--bad)" : "var(--tx4)"
+    }));
+
+    const output = [];
+    for (let k = 11; k >= 0; k--) {
+      const line = OUT_POOL[(s.outIdx - k + OUT_POOL.length * 3) % OUT_POOL.length];
+      const mm = String(14 + Math.floor((s.tick + 12 - k) / 6) % 45).padStart(2, "0");
+      output.push({ ts: "20:" + mm, t: line[1], c: line[0] === "ok" ? "var(--ok)" : line[0] === "ac" ? "var(--ac)" : line[0] === "tool" ? "#c9c9d3" : "var(--tx3)" });
+    }
+
+    const atQ = live.find(q => q.task === at.id && s.resolved[q.id] === undefined);
+    const atQv = atQ ? this.qView(atQ) : null;
+
+    const tabDefs = [["steps", "Steps", ""], ["contract", "Contract", "5"], ["changes", "Changes", "5"], ["output", "Output", "live"], ["questions", "Questions", "3"]];
+    const st = this.stateStyle(at.state);
+
+    return {
+      project: s.project, uptime: "3h 12m",
+      projOpen: s.projOpen,
+      toggleProj: () => this.setState(x => ({ projOpen: !x.projOpen })),
+      projects: [["reach-platform", "4 tasks"], ["firstmate", "1 task"], ["absc", "1 task"], ["kima-tools", "1 task"]].map(p => ({
+        name: p[0], count: p[1], color: p[0] === s.project ? "var(--ac)" : "var(--tx2)",
+        pick: () => this.setState({ project: p[0], projOpen: false })
+      })),
+      nav: [["now", "Now", "◆", needs], ["tasks", "Tasks", "≡", running], ["inbox", "Inbox", "◇", live.length], ["memory", "Memory", "▪", 0]].map(n => {
+        const on = s.view === n[0] || (n[0] === "tasks" && s.view === "task");
+        const urgentBadge = n[0] === "now" || n[0] === "inbox";
+        return {
+          label: n[1], glyph: n[2], go: () => this.go(n[0]),
+          bg: on ? "var(--s3)" : "transparent",
+          bar: on ? "var(--ac)" : "transparent",
+          color: on ? "var(--tx)" : "var(--tx2)",
+          glyphColor: on ? "var(--ac)" : "var(--tx4)",
+          badge: n[3] ? String(n[3]) : "",
+          badgeBg: urgentBadge && n[3] ? "var(--acbg)" : "transparent",
+          badgeColor: urgentBadge && n[3] ? "var(--ac)" : "var(--tx3)",
+          badgeBd: urgentBadge && n[3] ? "var(--acbd)" : "var(--bd)"
+        };
+      }),
+      goNew: () => this.go("new"), goInbox: () => this.go("inbox"), goTasks: () => this.go("tasks"), goMemory: () => this.go("memory"),
+      slots: [0, 1, 2, 3].map(i => ({ c: i < running ? "var(--ok)" : "var(--s4)" })),
+      slotLabel: running + "/4",
+
+      headTitle: { now: "Now", tasks: "Tasks", task: "Task", inbox: "Inbox", memory: "Memory", new: "New task" }[s.view],
+      headSub: s.view === "now" ? running + " live · " + live.length + " in queue · " + s.project
+        : s.view === "tasks" ? all.length + " tasks · " + running + " running · " + live.length + " questions"
+        : s.view === "task" ? at.id + " · " + at.repo + " / " + at.branch
+        : s.view === "inbox" ? live.length + " open · ranked by urgency, then age"
+        : s.view === "memory" ? memory.length + " entries · " + s.project
+        : "scoping · " + s.project,
+      attnLabel: needs ? needs + " need you" : "all clear",
+      attnGlyph: needs ? "△" : "✓",
+      attnBd: needs ? "var(--acbd)" : "var(--bd)",
+      attnBg: needs ? "var(--acbg)" : "transparent",
+      attnColor: needs ? "var(--ac)" : "var(--tx3)",
+
+      isNow: s.view === "now", isTasks: s.view === "tasks", isTask: s.view === "task",
+      isInbox: s.view === "inbox", isMemory: s.view === "memory", isNew: s.view === "new",
+
+      statNeeds: needs, statNeedsSub: needs ? "blocking" : "clear", statRunning: running,
+      memCount: memory.length, pendCount: s.promoted || s.dismissed ? 0 : 1,
+
+      urgent: live.filter(q => q.urgent).map(this.qView),
+      noUrgent: live.filter(q => q.urgent).length === 0,
+      inboxRest: live.length ? live.length + " non-blocking in the inbox" : "queue empty",
+      liveTasks: all.filter(t => ["running", "validating"].includes(t.state)).map(this.taskView),
+      settled: all.filter(t => ["done", "failed", "ready"].includes(t.state)).map(this.taskView),
+
+      filters, groups,
+
+      inbox: live.map(this.qView),
+      inboxEmpty: live.length === 0,
+      inboxSummary: live.length + " open · " + needs + " blocking · " + (live.length - needs) + " batched",
+
+      tabs: tabDefs.map(t => ({
+        label: t[1], count: t[2], pick: () => this.setState({ tab: t[0] }),
+        color: s.tab === t[0] ? "var(--tx)" : "var(--tx3)",
+        bar: s.tab === t[0] ? "var(--ac)" : "transparent"
+      })),
+      tabSteps: s.tab === "steps", tabContract: s.tab === "contract", tabChanges: s.tab === "changes",
+      tabOutput: s.tab === "output", tabQuestions: s.tab === "questions",
+
+      at: {
+        id: at.id, title: at.title, state: at.state,
+        stateColor: st.color, stateBd: at.state === "blocked" || at.state === "validating" ? "var(--acbd)" : "var(--bd2)",
+        stateBg: at.state === "blocked" ? "var(--acbg)" : "var(--s3)",
+        pause: () => this.toast("Task paused", "worker torn down after the current tool call · state written to disk", "ok"),
+        copy: () => this.copy("", at.id),
+        attachLabel: s.copied === at.id ? "copied ✓" : "fm attach " + at.id,
+        steps, criteria, files, diff, output,
+        critSummary: criteria.filter(c => c.status === "met").length + " met · 1 blocked · 1 not run",
+        diffPath: s.diffFile,
+        contractLock: at.state === "running" ? "locked while a session is live · answers still amend it" : "editable — no live session",
+        contract: [
+          { k: "goal", lines: [{ t: "Close the relevance-scoring coverage gaps described in ENG-529 without changing v2 behaviour.", font: SANS, size: "13.5px", color: "var(--tx)" }] },
+          { k: "in scope", lines: [
+            { t: "src/scoring/**", font: MONO, size: "12px", color: "var(--tx2)" },
+            { t: "supabase/migrations/**", font: MONO, size: "12px", color: "var(--tx2)" },
+            { t: "src/workflows/**  ← amended 20:41 from q_3d1", font: MONO, size: "12px", color: "var(--ac)" }
+          ] },
+          { k: "out of scope", lines: [{ t: "everything else — the guard hook blocks the write and the agent must raise a scope_change question", font: SANS, size: "13px", color: "var(--tx2)" }] },
+          { k: "criteria", lines: [{ t: "5 checks · 3 command-verified · 2 diff-constrained · 0 judgment calls", font: MONO, size: "12px", color: "var(--tx2)" }] },
+          { k: "validation", lines: [
+            { t: "pnpm test scoring · pnpm test:changed · pnpm ts:check && pnpm wf:verify", font: MONO, size: "12px", color: "var(--tx2)" }
+          ] },
+          { k: "steps", lines: [{ t: "plan → implement ×2 phases → review", font: MONO, size: "12px", color: "var(--tx2)" }] },
+          { k: "tripwires", lines: [{ t: "dependency manifest · new migrations · remote push · >200 line deletions", font: MONO, size: "12px", color: "var(--tx2)" }] },
+          { k: "memory", lines: [{ t: "4 entries injected from reach-platform.md", font: MONO, size: "12px", color: "var(--tx2)" }] }
+        ],
+        meta: [
+          { k: "state", v: at.state, color: st.color, sub: at.step },
+          { k: "generation", v: at.gen > 1 ? at.gen + " of 2 steps relayed" : "1 · no relay yet", color: "var(--tx)", sub: at.gen > 1 ? "1 context relay handoff" : "" },
+          { k: "session id", v: "sess_01k4v…9c2", color: "var(--tx2)", sub: "pinned at session start" },
+          { k: "cost", v: "1.9M tokens · 3 sessions", color: "var(--tx2)", sub: "" }
+        ],
+        ctxPct: ctxA, ctxLabel: Math.round(ctxA) + "%", ctxColor: this.ctxColor(ctxA),
+        worktree: "~/code/reach-platform-worktrees/eng-529-scoring",
+        injected: [
+          { d: "08-12", t: "v2 scoring behaviour must never change." },
+          { d: "08-02", t: "Temporal activity edits need a workflow version bump." },
+          { d: "08-17", t: "Migrations ship with a rollback in the same file." }
+        ],
+        hasQuestion: !!atQv, qBody: atQv ? atQv.body : "", qOptions: atQv ? atQv.options : [], qAge: atQv ? atQv.age + " ago" : "",
+        qFoot: atQv ? "default in " + atQv.defIn + " → " + atQv.def + "\nalso sent to slack · first answer wins" : "",
+        history: [
+          { type: "clarification", rail: "var(--bd2)", chipColor: "var(--tx3)", when: "20:12", q: "Should the breakdown be persisted or computed on read?", a: "Computed on read", aColor: "var(--tx)", via: "dashboard" },
+          { type: "fyi", rail: "var(--bd2)", chipColor: "var(--tx3)", when: "20:31", q: "Named the new column relevance_score_version to match feed_score_version. Proceeding.", a: "Noted", aColor: "var(--tx2)", via: "auto-acknowledged" },
+          { type: "scope change", rail: "var(--ac)", chipColor: "var(--ac)", when: "20:41", q: "The dispatch test needs a fixture under tests/fixtures — outside declared scope.", a: "Amend contract", aColor: "var(--ac)", via: "slack" }
+        ]
+      },
+
+      memory: memory.map(m => ({
+        date: m.date, src: m.src, text: m.text, prov: m.prov, hits: m.hits,
+        srcColor: m.src === "you" ? "var(--ac)" : m.src === "promoted" ? "var(--tx2)" : "var(--tx4)"
+      })),
+      memMeta: memory.length + " entries · 4.1 KB · compacts at 16 KB · archive kept",
+      hasPending: !s.promoted && !s.dismissed,
+      pending: [{
+        text: "Framer's publish API has no sandbox — round-trip tests need Jacques's account credentials.",
+        why: "asked in 2 tasks (q_7c1, q_5e4) · promoting stops it recurring",
+        accept: () => { this.setState(x => ({ promoted: true, extraMem: x.extraMem.concat([{ date: "2026-08-19", src: "promoted", text: "Framer's publish API has no sandbox — round-trip tests need account credentials.", prov: "promoted from q_7c1 · asked 2×", hits: "injected 0×" }]) })); this.toast("Promoted to project memory", "reach-platform.md · injected into every session from now on", "ok"); },
+        dismiss: () => { this.setState({ dismissed: true }); this.toast("Suggestion dismissed", "it will not be suggested again for this fingerprint", "dim"); }
+      }],
+      draftMem: s.draftMem,
+      onDraftMem: e => this.setState({ draftMem: e.target.value }),
+      onDraftKey: e => { if (e.key === "Enter") this.addMemNow(); },
+      addMem: () => this.addMemNow(),
+
+      chat, contractRows: [
+        ["goal", "Fix relevance scoring coverage gaps (ENG-529)", "var(--tx)"],
+        ["scope", "src/scoring/** · supabase/migrations/** · src/workflows/**", "var(--tx2)"],
+        ["out", "everything else — guard blocks writes, agent must ask", "var(--tx3)"],
+        ["criteria", "5 checks · 3 command-verified · 2 diff-constrained", "var(--tx2)"],
+        ["steps", "plan → implement ×2 → review", "var(--tx2)"],
+        ["memory", "4 entries injected from reach-platform.md", "var(--tx2)"]
+      ].map(r => ({ k: r[0], v: r[1], color: r[2] })),
+      showApprove: !s.approved,
+      approve: () => {
+        this.setState(x => ({ approved: true, tasks: { ...x.tasks, t_c3f9: { ...x.tasks.t_c3f9 } } }));
+        this.toast("Contract approved · task queued", "worktree created at reach-platform-worktrees/eng-529-scoring · plan step spawning", "run");
+        setTimeout(() => this.openTask("t_a1e5", "steps"), 900);
+      },
+      pushBack: () => this.toast("Contract opened for editing", "~/.firstmate/tasks/draft/contract.md", "dim"),
+      draftChat: s.draftChat,
+      onDraftChat: e => this.setState({ draftChat: e.target.value }),
+      onChatKey: e => { if (e.key === "Enter") this.sendChatNow(); },
+      sendChat: () => this.sendChatNow(),
+
+      paletteOpen: s.paletteOpen, pq: s.pq, paletteItems,
+      openPalette: () => this.setState({ paletteOpen: true, pq: "" }),
+      closePalette: () => this.setState({ paletteOpen: false }),
+      stop: e => e.stopPropagation(),
+      onPq: e => this.setState({ pq: e.target.value }),
+      onPqKey: e => { if (e.key === "Enter" && paletteItems[0]) paletteItems[0].run(); },
+
+      toast: s.toast, toastSub: s.toastSub,
+      toastColor: s.toastKind === "run" ? "var(--ac)" : s.toastKind === "dim" ? "var(--tx3)" : "var(--ok)",
+      toastGlyph: s.toastKind === "run" ? "●" : s.toastKind === "dim" ? "·" : "✓"
+    };
+  }
+
+  addMemNow() {
+    const t = this.state.draftMem.trim();
+    if (!t) return;
+    this.setState(s => ({
+      draftMem: "",
+      extraMem: s.extraMem.concat([{ date: "2026-08-19", src: "you", text: t, prov: "fm remember · dashboard", hits: "injected 0×" }])
+    }));
+    this.toast("Appended to project memory", "injected at the start of every session from now on", "ok");
+  }
+
+  sendChatNow() {
+    const t = this.state.draftChat.trim();
+    if (!t) return;
+    this.setState(s => ({
+      draftChat: "",
+      extraChat: s.extraChat.concat([
+        { who: "you", blocks: [[t, "'IBM Plex Sans',sans-serif", "14.5px", "var(--tx)", "0"]] },
+        { who: "first mate", blocks: [
+          ["Noted — folded into the contract as a constraint, not a suggestion. It needs a check I can run, so I've phrased it as a command criterion.", "'IBM Plex Sans',sans-serif", "14.5px", "var(--tx)", "0"],
+          ["+ criterion 6 · pnpm verify:" + t.split(" ")[0].toLowerCase().replace(/[^a-z]/g, ""), "'IBM Plex Mono',monospace", "12px", "var(--ac)", "10px"]
+        ] }
+      ])
+    }));
+  }
+}
+</script>
+</body>
+</html>
