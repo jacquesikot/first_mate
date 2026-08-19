@@ -204,6 +204,102 @@ def test_root_without_dashboard_build(client, monkeypatch):
     assert r.status_code in (200, 307)
 
 
+def test_fs_browse_and_repos(client, tmp_path):
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "browse" / "myrepo"
+    gitops.init_repo(repo)
+    (tmp_path / "browse" / "plain").mkdir()
+    data = client.get("/fs/browse", params={"path": str(tmp_path / "browse")}).json()
+    byname = {d["name"]: d for d in data["dirs"]}
+    assert byname["myrepo"]["is_repo"] is True
+    assert byname["plain"]["is_repo"] is False
+    assert data["parent"] == str(tmp_path)
+    assert client.get("/fs/browse", params={"path": "/no/such/dir"}).status_code == 400
+
+    client.post("/tasks", json={"contract": contract(client.repo)})
+    repos = client.get("/fs/repos").json()["repos"]
+    assert any(r["path"] == client.repo and r["source"] == "recent" for r in repos)
+
+
+def test_scoping_chat_flow(client, tmp_path, monkeypatch):
+    import json as _json
+
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "scoperepo"
+    gitops.init_repo(repo)
+
+    turns = []
+
+    def fake_runner(chat, text):
+        turns.append(text)
+        if len(turns) == 1:
+            return "Here is my proposed scope — push back.", "sid-1"
+        # Second turn: the "assistant" writes a valid contract.
+        chat.contract_path.write_text(_json.dumps({
+            "goal": chat.goal, "repo": chat.repo,
+            "steps": [{"id": "s1", "prompt": "p", "criteria": ["c1"]}],
+            "criteria": [{"id": "c1", "command": "true"}],
+        }))
+        return "Contract written and checked — ready for approval.", "sid-2"
+
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess", fake_runner)
+
+    # repo must be a git repo
+    r = client.post("/scoping", json={"goal": "g", "repo": str(tmp_path)})
+    assert r.status_code == 400
+
+    r = client.post("/scoping", json={"goal": "scope me", "repo": str(repo)})
+    assert r.status_code == 200, r.text
+    chat = r.json()["chat"]
+    assert chat["status"] == "awaiting_operator"
+    assert chat["session_id"] == "sid-1"
+    assert chat["messages"][-1]["role"] == "firstmate"
+    assert "proposed scope" in chat["messages"][-1]["text"]
+    # first turn sends the scoping prompt, not the goal string alone
+    assert "scoping assistant" in turns[0]
+
+    r = client.post(f"/scoping/{chat['id']}/message", json={"text": "looks right, finalize"})
+    chat = r.json()["chat"]
+    assert chat["status"] == "contract_ready"
+    assert chat["contract"]["goal"] == "scope me"
+    assert chat["contract_errors"] == []
+
+    r = client.post(f"/scoping/{chat['id']}/approve", json={"run": False})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["started"] is False
+    assert body["chat"]["status"] == "approved"
+    tid = body["task"]["id"]
+    assert client.get(f"/tasks/{tid}").json()["task"]["status"] == "ready"
+    # double-approve rejected; messaging an approved chat rejected
+    assert client.post(f"/scoping/{chat['id']}/approve", json={}).status_code == 409
+    assert client.post(f"/scoping/{chat['id']}/message",
+                       json={"text": "hi"}).status_code == 409
+    # rehydration from disk after a "restart" (fresh app over same home)
+    reloaded = scoping_api.load_chat(client.store.home, chat["id"])
+    assert reloaded is not None and reloaded.status == "approved"
+
+
+def test_scoping_failed_turn(client, tmp_path, monkeypatch):
+    from firstmate import scoping_api
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "failrepo"
+    gitops.init_repo(repo)
+
+    def broken_runner(chat, text):
+        raise RuntimeError("claude exploded")
+
+    monkeypatch.setattr(scoping_api, "run_turn_subprocess", broken_runner)
+    r = client.post("/scoping", json={"goal": "g", "repo": str(repo)})
+    chat = r.json()["chat"]
+    assert chat["status"] == "failed"
+    assert "turn failed" in chat["messages"][-1]["text"]
+
+
 def test_websocket_snapshot(client):
     tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
     with client.websocket_connect("/ws") as ws:

@@ -15,7 +15,7 @@ type Route =
   | { view: "task"; id: string }
   | { view: "inbox" }
   | { view: "memory" }
-  | { view: "new" };
+  | { view: "new"; chatId?: string };
 
 function parseHash(): Route {
   const h = location.hash.replace(/^#\/?/, "");
@@ -23,6 +23,7 @@ function parseHash(): Route {
   if (h === "tasks") return { view: "tasks" };
   if (h === "inbox") return { view: "inbox" };
   if (h === "memory") return { view: "memory" };
+  if (h.startsWith("new/")) return { view: "new", chatId: h.slice(4) };
   if (h === "new") return { view: "new" };
   return { view: "now" };
 }
@@ -370,7 +371,9 @@ export default function App() {
             {route.view === "task" && <TaskDetailView taskId={route.id} />}
             {route.view === "inbox" && <InboxView />}
             {route.view === "memory" && <MemoryView />}
-            {route.view === "new" && <NewTaskView />}
+            {route.view === "new" && (
+              <NewTaskView chatId={"chatId" in route ? route.chatId : undefined} />
+            )}
           </div>
         </main>
 

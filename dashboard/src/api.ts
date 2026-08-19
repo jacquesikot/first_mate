@@ -174,6 +174,52 @@ export interface StatusInfo {
   config: { max_workers: number; wall_tokens: number };
 }
 
+export interface RepoSuggestion {
+  path: string;
+  name: string;
+  source: "recent" | "scan";
+}
+
+export interface BrowseDir {
+  name: string;
+  path: string;
+  is_repo: boolean;
+}
+
+export interface BrowseInfo {
+  path: string;
+  parent: string | null;
+  is_repo: boolean;
+  dirs: BrowseDir[];
+}
+
+export interface ScopingMessage {
+  role: "operator" | "firstmate" | "system";
+  text: string;
+  at: string;
+}
+
+export interface ScopingChat {
+  id: string;
+  goal: string;
+  repo: string;
+  dir: string;
+  status:
+    | "thinking"
+    | "awaiting_operator"
+    | "contract_ready"
+    | "approved"
+    | "abandoned"
+    | "failed";
+  session_id: string | null;
+  model: string | null;
+  messages: ScopingMessage[];
+  contract: Record<string, unknown> | null;
+  contract_errors: string[];
+  task_id: string | null;
+  created_at: string;
+}
+
 export interface MemoryProject {
   project: string;
   bytes: number;
@@ -236,6 +282,22 @@ export const api = {
     req<{ task: Task; started: boolean }>("POST", "/tasks", { contract, run }),
   editContract: (id: string, contract: unknown) =>
     req<{ contract: Contract }>("PUT", `/tasks/${id}/contract`, { contract }),
+  repos: () => req<{ repos: RepoSuggestion[] }>("GET", "/fs/repos"),
+  browse: (path?: string) =>
+    req<BrowseInfo>("GET", `/fs/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  scopeStart: (goal: string, repo: string) =>
+    req<{ chat: ScopingChat }>("POST", "/scoping", { goal, repo }),
+  scopeGet: (id: string) => req<{ chat: ScopingChat }>("GET", `/scoping/${id}`),
+  scopeMessage: (id: string, text: string) =>
+    req<{ chat: ScopingChat }>("POST", `/scoping/${id}/message`, { text }),
+  scopeApprove: (id: string, run: boolean) =>
+    req<{ task: Task; started: boolean; chat: ScopingChat }>(
+      "POST",
+      `/scoping/${id}/approve`,
+      { run }
+    ),
+  scopeAbandon: (id: string) =>
+    req<{ chat: ScopingChat }>("POST", `/scoping/${id}/abandon`),
   memory: () => req<{ projects: MemoryProject[] }>("GET", "/memory"),
   memoryFile: (project: string) =>
     req<{ project: string; text: string }>("GET", `/memory/${project}`),

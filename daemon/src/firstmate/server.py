@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
@@ -279,10 +280,8 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def list_tasks():
         return {"tasks": store.list_tasks()}
 
-    @app.post("/tasks")
-    async def create_task(request: Request):
-        body = await request.json()
-        data = body.get("contract")
+    async def create_task_from_contract(data: dict | None, run: bool):
+        """Shared gate for POST /tasks and scoping approval."""
         errors = validate_contract(data or {})
         repo = str((data or {}).get("repo", ""))
         if repo and not Path(repo).expanduser().is_dir():
@@ -292,9 +291,16 @@ def create_app(store: Store | None = None, autostart: bool = True,
         contract = Contract.from_dict(data)
         contract.repo = str(Path(contract.repo).expanduser().resolve())
         task = store.create_task(contract)
-        started = manager.start(task.id) if body.get("run") else False
+        started = manager.start(task.id) if run else False
         evt = store.append_event(task.id, "task_ready", data={"started": started})
         await manager.broadcast(evt)
+        return task, started
+
+    @app.post("/tasks")
+    async def create_task(request: Request):
+        body = await request.json()
+        task, started = await create_task_from_contract(
+            body.get("contract"), bool(body.get("run")))
         return {"task": task.to_dict(), "started": started}
 
     @app.get("/tasks/{task_id}")
@@ -441,6 +447,167 @@ def create_app(store: Store | None = None, autostart: bool = True,
                                  data={"by": str(body.get("by", "dashboard"))})
         await manager.broadcast(evt)
         return {"contract": contract.to_dict()}
+
+    # -------------------------------------------- repo picker (localhost)
+
+    SCAN_ROOTS = ["~/code", "~/Documents/code", "~/projects", "~/dev", "~/src"]
+
+    @app.get("/fs/repos")
+    async def fs_repos():
+        """Repo suggestions for the New-task picker: repos of existing
+        tasks first, then a shallow scan of common code directories."""
+        out: list[dict] = []
+        seen: set[tuple[int, int]] = set()  # (dev, ino) — case-insensitive fs
+
+        def add(path: Path, source: str) -> None:
+            try:
+                st = path.stat()
+            except OSError:
+                return
+            key = (st.st_dev, st.st_ino)
+            if key in seen or not path.is_dir():
+                return
+            seen.add(key)
+            out.append({"path": str(path), "name": path.name, "source": source})
+
+        for row in store.list_tasks():
+            add(Path(row["repo"]), "recent")
+        for root in SCAN_ROOTS:
+            rp = Path(root).expanduser()
+            if not rp.is_dir():
+                continue
+            try:
+                children = sorted(rp.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if len(out) >= 60:
+                    break
+                if child.is_dir() and (child / ".git").exists():
+                    add(child, "scan")
+        return {"repos": out}
+
+    @app.get("/fs/browse")
+    async def fs_browse(path: str | None = None):
+        """Directory listing for the picker's browse modal. The daemon is
+        localhost-only; this is the operator browsing their own machine."""
+        p = Path(path).expanduser() if path else Path.home()
+        try:
+            p = p.resolve()
+        except OSError:
+            raise HTTPException(400, f"cannot resolve path: {path}")
+        if not p.is_dir():
+            raise HTTPException(400, f"not a directory: {p}")
+        dirs = []
+        try:
+            children = sorted(p.iterdir(), key=lambda c: c.name.lower())
+        except PermissionError:
+            raise HTTPException(403, f"permission denied: {p}")
+        for child in children:
+            if child.name.startswith("."):
+                continue
+            try:
+                if not child.is_dir():
+                    continue
+                dirs.append({"name": child.name, "path": str(child),
+                             "is_repo": (child / ".git").exists()})
+            except OSError:
+                continue
+            if len(dirs) >= 300:
+                break
+        return {"path": str(p),
+                "parent": str(p.parent) if p != p.parent else None,
+                "is_repo": (p / ".git").exists(),
+                "dirs": dirs}
+
+    # ------------------------------------------- scoping in the browser
+
+    chats: dict[str, scoping_api.ScopingChat] = {}
+    chat_locks: dict[str, asyncio.Lock] = {}
+
+    def get_chat_or_404(chat_id: str) -> scoping_api.ScopingChat:
+        chat = chats.get(chat_id) or scoping_api.load_chat(store.home, chat_id)
+        if chat is None:
+            raise HTTPException(404, f"unknown scoping chat: {chat_id}")
+        chats[chat_id] = chat
+        return chat
+
+    async def run_chat_turn(chat: scoping_api.ScopingChat, text: str):
+        lock = chat_locks.setdefault(chat.id, asyncio.Lock())
+        if lock.locked():
+            raise HTTPException(409, "a turn is already running for this chat")
+        async with lock:
+            chat = await asyncio.to_thread(scoping_api.advance, chat, text)
+        chats[chat.id] = chat
+        await manager.broadcast({"kind": "scoping", "id": chat.id,
+                                 "status": chat.status})
+        return chat
+
+    @app.post("/scoping")
+    async def start_scoping(request: Request):
+        body = await request.json()
+        goal = str(body.get("goal", "")).strip()
+        repo = str(body.get("repo", "")).strip()
+        if not goal:
+            raise HTTPException(400, "goal is required")
+        rp = Path(repo).expanduser()
+        if not repo or not rp.is_dir():
+            raise HTTPException(400, f"repo path does not exist: {repo}")
+        if not (rp / ".git").exists():
+            raise HTTPException(400, f"not a git repository: {rp}")
+        chat = scoping_api.start_chat(
+            store.home, goal, rp.resolve(),
+            model=manager.config.get("scoping_model"),
+        )
+        chats[chat.id] = chat
+        # First turn runs inline: the assistant reads repo + memory and
+        # opens with a proposal (PRD §6.1 — no questionnaire).
+        chat = await run_chat_turn(chat, "")
+        return {"chat": chat.to_dict()}
+
+    @app.get("/scoping/{chat_id}")
+    async def get_scoping(chat_id: str):
+        return {"chat": get_chat_or_404(chat_id).to_dict()}
+
+    @app.post("/scoping/{chat_id}/message")
+    async def scoping_message(chat_id: str, request: Request):
+        chat = get_chat_or_404(chat_id)
+        if chat.status in ("approved", "abandoned"):
+            raise HTTPException(409, f"chat is {chat.status}")
+        body = await request.json()
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise HTTPException(400, "text is required")
+        chat = await run_chat_turn(chat, text)
+        return {"chat": chat.to_dict()}
+
+    @app.post("/scoping/{chat_id}/approve")
+    async def scoping_approve(chat_id: str, request: Request):
+        chat = get_chat_or_404(chat_id)
+        if chat.status == "approved":
+            raise HTTPException(409, "already approved")
+        body = await request.json()
+        scoping_api.refresh_contract(chat)
+        if chat.contract is None:
+            raise HTTPException(400, "no contract written yet — keep scoping")
+        if chat.contract_errors:
+            raise HTTPException(400, {"errors": chat.contract_errors})
+        task, started = await create_task_from_contract(
+            chat.contract, bool(body.get("run", True)))
+        chat.status = "approved"
+        chat.task_id = task.id
+        chat.save()
+        await manager.broadcast({"kind": "scoping", "id": chat.id,
+                                 "status": chat.status, "task_id": task.id})
+        return {"task": task.to_dict(), "started": started,
+                "chat": chat.to_dict()}
+
+    @app.post("/scoping/{chat_id}/abandon")
+    async def scoping_abandon(chat_id: str):
+        chat = get_chat_or_404(chat_id)
+        chat.status = "abandoned"
+        chat.save()
+        return {"chat": chat.to_dict()}
 
     # ------------------------------------------------------------- memory
 

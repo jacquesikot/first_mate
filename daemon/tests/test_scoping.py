@@ -26,9 +26,12 @@ def test_build_command_allowlist(tmp_path):
     cmd = scoping.build_command("PROMPT", tmp_path, model="opus")
     assert cmd[0] == "claude" and cmd[1] == "PROMPT"
     allowed = cmd[cmd.index("--allowedTools") + 1]
-    assert f"Write(/{tmp_path}/**)" in allowed  # //abs/path permission syntax
+    # Edit(...) rules gate all file-modification tools incl. Write; a
+    # Write(path) rule would be accepted but never consulted (verified live).
+    assert f"Edit(/{tmp_path}/**)" in allowed  # //abs/path permission syntax
     assert "Bash(fm contract check:*)" in allowed
-    assert "Edit" not in allowed  # scoping never edits the repo
+    assert "Edit," not in allowed and not allowed.startswith("Edit,")  # no unscoped Edit
+    assert cmd[cmd.index("--add-dir") + 1] == str(tmp_path)
     assert cmd[-2:] == ["--model", "opus"]
     assert "--model" not in scoping.build_command("P", tmp_path)
 

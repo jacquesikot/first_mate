@@ -75,7 +75,12 @@ headless session that knows nothing you don't put in the contract \
 5. Keep `allowed_tools` minimal per step (review-ish steps: read-only; \
 implementation steps: Read/Glob/Grep/Edit/Write plus the specific \
 Bash(...) commands the step needs, e.g. "Bash(npm test:*)").
-6. Scope tripwires that will interrupt the operator unless pre-approved \
+6. The orchestrator executes every completion criterion itself after a \
+step ends — step prompts must NOT tell the worker to run a check the \
+step's allowed_tools does not permit (that parks the task on a needless \
+question). If a step should run something itself (tests, a script), add \
+it to allowed_tools explicitly, e.g. "Bash(./scripts/check.sh:*)".
+7. Scope tripwires that will interrupt the operator unless pre-approved \
 in the contract: dependency-manifest changes, migrations, git push, \
 large diffs. If the task inherently needs one (e.g. adding a dependency), \
 say so and set it in the contract, e.g. "tripwires": {{"dependency_manifests": false}} \
@@ -88,7 +93,7 @@ When the operator approves the plan:
 2. Run: fm contract check {contract_path}
 3. Fix any errors it reports and re-check until it passes.
 4. Confirm to the operator that the contract is ready, with a one-screen \
-summary. The task is created automatically when this session ends.
+summary. {finalize}
 
 Contract JSON shape (all fields shown; tripwires/scope_out may be empty):
 
@@ -118,12 +123,19 @@ def repo_root(cwd: Path) -> Path:
     return Path(top) if proc.returncode == 0 and top else cwd
 
 
+TERMINAL_FINALIZE = "The task is created automatically when this session ends."
+BROWSER_FINALIZE = ("The operator reviews and approves the contract in the "
+                    "dashboard; once `fm contract check` passes, tell them "
+                    "it is ready for approval.")
+
+
 def build_prompt(goal: str, repo: Path, contract_path: Path,
-                 memory: str | None) -> str:
+                 memory: str | None, finalize: str = TERMINAL_FINALIZE) -> str:
     return SCOPING_PROMPT.format(
         goal=goal,
         repo=repo,
         contract_path=contract_path,
+        finalize=finalize,
         schema=CONTRACT_SCHEMA_EXAMPLE.replace(
             '"<absolute repo path — use the value given above verbatim>"',
             json.dumps(str(repo)),
@@ -139,10 +151,15 @@ def build_command(prompt: str, scoping_dir: Path, model: str | None = None) -> l
     # would be settings-file-relative).
     allowed = [
         "Read", "Glob", "Grep",
-        f"Write(/{scoping_dir}/**)",
+        # Edit(...) rules gate ALL file-modification tools (incl. Write);
+        # a Write(path) rule is accepted but never consulted.
+        f"Edit(/{scoping_dir}/**)",
         "Bash(fm contract check:*)",
     ]
-    cmd = ["claude", prompt, "--allowedTools", ",".join(allowed)]
+    # --add-dir: the scoping dir is outside the repo cwd; without it the
+    # contract Write is treated as out-of-project access.
+    cmd = ["claude", prompt, "--add-dir", str(scoping_dir),
+           "--allowedTools", ",".join(allowed)]
     if model:
         cmd += ["--model", model]
     return cmd
