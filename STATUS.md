@@ -9,9 +9,7 @@
 
 ## Next up (start here)
 
-1. **Repo setup** (not yet done):
-   - `git init` + initial commit (repo is not yet a git repository).
-   - Decide and scaffold the project layout (suggested: `daemon/` Python package, `dashboard/` later in Phase 3, `skills/` for the scoping skill in Phase 2).
+1. **Scaffold the project layout** (suggested: `daemon/` Python package, `dashboard/` later in Phase 3, `skills/` for the scoping skill in Phase 2). Add a `.gitignore` when code starts.
 2. **Phase 0 — relay spike** (PRD §8, this is the go/no-go for the whole design):
    - Headless spawner: spawn `claude -p` + a skill in a git worktree, capture session ID and structured JSON output.
    - Forced context-wall relay: pre-compaction hook blocks auto-compaction and signals the orchestrator; handoff brief written; session killed; generation N+1 spawned with contract + handoff injected via session-start hook.
@@ -27,6 +25,7 @@
 - **2026-08-19** — PRD written and agreed (`PRD.md` v1.0, status: architecture agreed, ready for implementation).
 - **2026-08-19** — Dashboard UI prototype built (`prototype/dashboard.html`, mock data, clickable; design decisions documented in `README.md`).
 - **2026-08-19** — Multi-session memory system set up (`CLAUDE.md` + this file, session protocol defined).
+- **2026-08-19** — Git initialized; public repo created and pushed: https://github.com/jacquesikot/first_mate (branch `main`). Project is open source by intent.
 
 ## Decision log
 
@@ -47,4 +46,4 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 
 One dated entry per working session: who/what/outcome, newest first.
 
-- **2026-08-19** — Session 1: created the multi-session memory system (`CLAUDE.md`, `STATUS.md`). No application code written. Next session should start at "Next up" item 1.
+- **2026-08-19** — Session 1: created the multi-session memory system (`CLAUDE.md`, `STATUS.md`); initialized git and pushed the public repo (github.com/jacquesikot/first_mate). No application code written. Next session should start at "Next up" item 1.
