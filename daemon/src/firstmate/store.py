@@ -27,6 +27,7 @@ import os
 import re
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Contract, Question, StepState, Task, now_iso, slugify
@@ -311,6 +312,30 @@ class Store:
         return path
 
     # ------------------------------------------------------------- memory
+
+    def list_memory(self) -> list[dict]:
+        """All per-project memory files with light metadata."""
+        d = self.home / "memory"
+        out = []
+        for p in sorted(d.glob("*.md")):
+            stat = p.stat()
+            text = p.read_text()
+            entries = sum(1 for l in text.splitlines() if l.startswith("- "))
+            out.append({
+                "project": p.stem,
+                "bytes": stat.st_size,
+                "entries": entries,
+                "updated_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc).isoformat(timespec="seconds"),
+            })
+        return out
+
+    def write_memory(self, project: str, text: str) -> Path:
+        """Full-file replace — memory is the owner's data, editable from
+        the dashboard (PRD §6.6)."""
+        path = self.home / "memory" / f"{project}.md"
+        path.write_text(text if text.endswith("\n") else text + "\n")
+        return path
 
     def memory_for_project(self, project: str) -> str | None:
         path = self.home / "memory" / f"{project}.md"

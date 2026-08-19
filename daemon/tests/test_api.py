@@ -31,7 +31,8 @@ def contract(repo: str) -> dict:
 def test_health_and_status_empty(client):
     assert client.get("/health").json()["ok"] is True
     data = client.get("/status").json()
-    assert data == {"tasks": [], "questions": []}
+    assert data["tasks"] == [] and data["questions"] == []
+    assert data["config"]["max_workers"]
 
 
 def test_create_task_and_get(client):
@@ -120,6 +121,87 @@ def test_lifecycle_endpoints(client):
     assert r.json()["status"] == "abandoned"
     r = client.post(f"/tasks/{tid}/run")
     assert r.status_code == 409
+
+
+def test_diff_endpoints(client, tmp_path):
+    from firstmate.exec import gitops
+
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    # No worktree yet → empty, not an error (dashboard is refresh-safe).
+    assert client.get(f"/tasks/{tid}/diff").json()["files"] == []
+
+    wt = tmp_path / "wt"
+    gitops.init_repo(wt)
+    (wt / "tracked.txt").write_text("one\n")
+    import subprocess
+    subprocess.run(["git", "-C", str(wt), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-qm", "base"], check=True)
+    (wt / "tracked.txt").write_text("one\ntwo\n")
+    (wt / "new.txt").write_text("a\nb\nc\n")
+    task = client.store.load_task(tid)
+    task.worktree = str(wt)
+    client.store.save_task(task)
+
+    data = client.get(f"/tasks/{tid}/diff").json()
+    byname = {f["path"]: f for f in data["files"]}
+    assert byname["tracked.txt"]["added"] == 1
+    assert byname["new.txt"]["untracked"] is True and byname["new.txt"]["added"] == 3
+    assert data["added"] == 1  # tracked lines only (matches diff tripwires)
+
+    d = client.get(f"/tasks/{tid}/diff/file", params={"path": "tracked.txt"}).json()
+    assert "+two" in d["diff"]
+    d = client.get(f"/tasks/{tid}/diff/file", params={"path": "new.txt"}).json()
+    assert "+a" in d["diff"]
+
+
+def test_output_endpoint_no_live_session(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    data = client.get(f"/tasks/{tid}/output").json()
+    assert data["live"] is False and data["output"] is None
+
+
+def test_contract_edit_between_steps(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    edited = contract(client.repo)
+    edited["goal"] = "edited goal"
+    edited["steps"].append({"id": "s2", "prompt": "extra", "criteria": []})
+    r = client.put(f"/tasks/{tid}/contract", json={"contract": edited})
+    assert r.status_code == 200, r.text
+    detail = client.get(f"/tasks/{tid}").json()
+    assert detail["contract"]["goal"] == "edited goal"
+    assert [s["id"] for s in detail["task"]["steps"]] == ["s1", "s2"]
+    assert any(e["event"] == "contract_edited" for e in detail["events"])
+    # invalid edits are rejected by the same machine-checkability gate
+    bad = contract(client.repo)
+    bad["criteria"][0]["command"] = ""
+    assert client.put(f"/tasks/{tid}/contract", json={"contract": bad}).status_code == 400
+    # terminal tasks are immutable
+    client.post(f"/tasks/{tid}/abandon")
+    assert client.put(f"/tasks/{tid}/contract",
+                      json={"contract": edited}).status_code == 409
+
+
+def test_memory_endpoints(client):
+    assert client.get("/memory").json()["projects"] == []
+    r = client.post("/memory/proj", json={"fact": "the tests live in tests/"})
+    assert r.status_code == 200
+    assert "the tests live in tests/" in r.json()["text"]
+    listing = client.get("/memory").json()["projects"]
+    assert listing[0]["project"] == "proj" and listing[0]["entries"] == 1
+    r = client.get("/memory/proj")
+    assert "Project memory: proj" in r.json()["text"]
+    r = client.put("/memory/proj", json={"text": "# rewritten\n\n- kept\n"})
+    assert r.json()["text"].startswith("# rewritten")
+    assert client.get("/memory/nope").status_code == 404
+    assert client.post("/memory/..sneaky", json={"fact": "x"}).status_code == 400
+    assert client.put("/memory/proj", json={"text": "  "}).status_code == 400
+
+
+def test_root_without_dashboard_build(client, monkeypatch):
+    # The client fixture app was created without FM_DASHBOARD_DIST; if the
+    # repo has a real dashboard build the mount exists — accept either.
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code in (200, 307)
 
 
 def test_websocket_snapshot(client):

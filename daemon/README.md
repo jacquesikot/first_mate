@@ -1,8 +1,14 @@
 # First Mate daemon
 
-Python package for the `fm` daemon (PRD §7). Phases 1 (orchestrator core)
-and 2 (scoping + scope guard) are implemented on top of the
-Phase-0-proven execution layer.
+Python package for the `fm` daemon (PRD §7). Phases 1 (orchestrator core),
+2 (scoping + scope guard), and 3 (web dashboard serving + live streaming)
+are implemented on top of the Phase-0-proven execution layer.
+
+The daemon serves the built dashboard SPA at `/ui` (see `../dashboard/` —
+build it with `pnpm install && pnpm build` there; override the dist
+location with `FM_DASHBOARD_DIST`). `fm serve --open` opens it. Live pane
+output + context meters are pushed over `/ws` as `{"kind":"live",...}`
+frames by a capture loop that only runs while a browser is connected.
 
 ```
 src/firstmate/

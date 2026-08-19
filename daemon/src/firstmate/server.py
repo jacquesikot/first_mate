@@ -8,18 +8,65 @@ talk to this API so state is always consistent. Binds 127.0.0.1 only
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-from .exec import tmux
+from .exec import context as contexttrack
+from .exec import gitops, tmux
 from .models import (
-    Contract, Question, QUESTION_TYPES, TERMINAL_TASK_STATUSES,
-    new_id, now_iso, validate_contract,
+    Contract, Question, QUESTION_TYPES, TERMINAL_TASK_STATUSES, Task,
+    StepState, new_id, now_iso, validate_contract,
 )
 from .orchestrator import TaskRunner
 from .store import Store
+
+LIVE_POLL_SECONDS = 1.0  # pane-capture/context push cadence (PRD: <1s felt)
+PANE_TAIL_LINES = 160
+
+
+def dashboard_dist() -> Path | None:
+    """Locate the built SPA. Override with FM_DASHBOARD_DIST; default is
+    <repo>/dashboard/dist relative to this source tree."""
+    env = os.environ.get("FM_DASHBOARD_DIST")
+    if env:
+        p = Path(env).expanduser()
+        return p if p.is_dir() else None
+    p = Path(__file__).resolve().parents[3] / "dashboard" / "dist"
+    return p if p.is_dir() else None
+
+
+def live_session(task: Task) -> tuple[str | None, dict | None]:
+    """(step_id, session record dict) of the task's live worker, if any."""
+    for st in task.steps:
+        for rec in st.sessions:
+            if rec.ended_at is None and rec.window_id:
+                return st.id, rec.to_dict()
+    return None, None
+
+
+def context_reading(task: Task, config: dict) -> dict | None:
+    """Live-session context meter (PRD §6.3), or None when no session."""
+    step_id, rec = live_session(task)
+    if rec is None or not task.worktree:
+        return None
+    reading = contexttrack.read_context(Path(task.worktree), rec["session_id"])
+    if reading is None:
+        return None
+    return {
+        "step_id": step_id,
+        "session_id": reading.session_id,
+        "tokens": reading.tokens,
+        "limit": reading.limit,
+        "wall_tokens": int(config.get("wall_tokens") or 0),
+        "percent": round(reading.percent, 1),
+        "band": reading.band,
+    }
 
 
 class Manager:
@@ -35,6 +82,8 @@ class Manager:
         self.runners: dict[str, TaskRunner] = {}
         self._loops: dict[str, asyncio.Task] = {}
         self.sockets: set[WebSocket] = set()
+        self._live_task: asyncio.Task | None = None
+        self._live_sent: dict[str, tuple] = {}  # task_id -> (output, tokens)
 
     async def broadcast(self, evt: dict) -> None:
         dead = []
@@ -76,6 +125,64 @@ class Manager:
             return True
         return False
 
+    # ------------------------------------------------- live output streaming
+
+    def capture_live(self, task: Task) -> dict | None:
+        """One read-only pane capture + context reading for the task's live
+        session (observability only — never used to infer state)."""
+        step_id, rec = live_session(task)
+        if rec is None:
+            return None
+        try:
+            text = tmux.capture(tmux.Window(rec["window_id"], ""),
+                                lines=PANE_TAIL_LINES)
+        except tmux.TmuxError:
+            return None
+        return {
+            "kind": "live",
+            "task_id": task.id,
+            "step_id": step_id,
+            "session_id": rec["session_id"],
+            "generation": rec["generation"],
+            "output": text.rstrip("\n"),
+            "context": context_reading(task, self.config),
+        }
+
+    async def _live_loop(self) -> None:
+        """Push pane captures + context meters over the WebSocket while
+        anyone is watching. tmux stays behind exec/tmux.py; this loop only
+        fans results out."""
+        while True:
+            try:
+                await asyncio.sleep(LIVE_POLL_SECONDS)
+                if not self.sockets:
+                    continue
+                for row in self.store.list_tasks():
+                    if row["status"] not in ("running", "validating"):
+                        self._live_sent.pop(row["id"], None)
+                        continue
+                    task = self.store.load_task(row["id"])
+                    if task is None:
+                        continue
+                    payload = await asyncio.to_thread(self.capture_live, task)
+                    if payload is None:
+                        continue
+                    key = (payload["output"],
+                           (payload["context"] or {}).get("tokens"))
+                    if self._live_sent.get(task.id) == key:
+                        continue
+                    self._live_sent[task.id] = key
+                    await self.broadcast(payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue  # observability must never take the daemon down
+
+    def start_live_loop(self) -> None:
+        if self._live_task is None or self._live_task.done():
+            self._live_task = asyncio.create_task(self._live_loop(),
+                                                  name="live-stream")
+
     async def reconcile(self) -> None:
         """Boot recovery (acceptance criterion 8): mark sessions the dead
         daemon left in flight as orphaned, kill their tmux windows, and
@@ -96,6 +203,8 @@ class Manager:
             self.start(task.id)
 
     async def shutdown(self) -> None:
+        if self._live_task is not None:
+            self._live_task.cancel()
         for loop in list(self._loops.values()):
             loop.cancel()
 
@@ -112,6 +221,7 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def lifespan(_app: FastAPI):
         if autostart:
             await manager.reconcile()
+            manager.start_live_loop()
         yield
         await manager.shutdown()
 
@@ -156,9 +266,12 @@ def create_app(store: Store | None = None, autostart: bool = True,
                 except KeyError:
                     pass
             tasks.append({**row, "generation": gen,
-                          "running": manager.running(task.id)})
+                          "running": manager.running(task.id),
+                          "context": context_reading(task, manager.config)})
         questions = [q.to_dict() for q in store.list_questions(status="open")]
-        return {"tasks": tasks, "questions": questions}
+        return {"tasks": tasks, "questions": questions,
+                "config": {"max_workers": manager.config["max_workers"],
+                           "wall_tokens": manager.config["wall_tokens"]}}
 
     # -------------------------------------------------------------- tasks
 
@@ -188,13 +301,45 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def get_task(task_id: str):
         task = get_task_or_404(task_id)
         contract = store.load_contract(task_id)
+        handoffs = {}
+        artifacts = {}
+        for st in task.steps:
+            latest = store.latest_handoff(task_id, st.id)
+            if latest:
+                handoffs[st.id] = {"generation": latest[0], "text": latest[1]}
+            vdir = store.step_dir(task_id, st.id)
+            if vdir.exists():
+                artifacts[st.id] = sorted(p.name for p in vdir.iterdir())
+        validations = {}
+        for st in task.steps:
+            d = store.step_dir(task_id, st.id)
+            best = None
+            if d.exists():
+                for p in sorted(d.glob("validation-attempt*.json")):
+                    best = p
+            if best is not None:
+                try:
+                    validations[st.id] = json.loads(best.read_text())
+                except json.JSONDecodeError:
+                    pass
+        tval = store.task_dir(task_id) / "validation.json"
+        if tval.exists():
+            try:
+                validations["__task__"] = json.loads(tval.read_text())
+            except json.JSONDecodeError:
+                pass
         return {
             "task": task.to_dict(),
             "contract": contract.to_dict() if contract else None,
+            "contract_md": (store.task_dir(task_id) / "contract.md").read_text()
+            if (store.task_dir(task_id) / "contract.md").exists() else None,
             "questions": [q.to_dict() for q in store.list_questions(task_id=task_id)],
-            "events": store.events_tail(task_id),
+            "events": store.events_tail(task_id, n=200),
             "attach": live_attach(task),
             "running": manager.running(task_id),
+            "context": context_reading(task, manager.config),
+            "handoffs": handoffs,
+            "validations": validations,
         }
 
     @app.post("/tasks/{task_id}/run")
@@ -230,6 +375,110 @@ def create_app(store: Store | None = None, autostart: bool = True,
         evt = store.append_event(task_id, "task_status", data={"status": "abandoned"})
         await manager.broadcast(evt)
         return {"delivered": False, "status": task.status}
+
+    @app.get("/tasks/{task_id}/diff")
+    async def task_diff(task_id: str):
+        task = get_task_or_404(task_id)
+        if not task.worktree or not Path(task.worktree).is_dir():
+            return {"files": [], "added": 0, "deleted": 0, "worktree": task.worktree}
+        wt = Path(task.worktree)
+        try:
+            files = await asyncio.to_thread(gitops.numstat_files, wt)
+            added, deleted = await asyncio.to_thread(gitops.diff_numstat, wt)
+        except gitops.GitError as e:
+            raise HTTPException(500, f"git error: {e}")
+        return {"files": files, "added": added, "deleted": deleted,
+                "worktree": task.worktree, "branch": task.branch}
+
+    @app.get("/tasks/{task_id}/diff/file")
+    async def task_diff_file(task_id: str, path: str):
+        task = get_task_or_404(task_id)
+        if not task.worktree or not Path(task.worktree).is_dir():
+            raise HTTPException(404, "task has no worktree")
+        try:
+            text = await asyncio.to_thread(
+                gitops.diff_file, Path(task.worktree), path)
+        except gitops.GitError as e:
+            raise HTTPException(500, f"git error: {e}")
+        return {"path": path, "diff": text}
+
+    @app.get("/tasks/{task_id}/output")
+    async def task_output(task_id: str):
+        task = get_task_or_404(task_id)
+        payload = await asyncio.to_thread(manager.capture_live, task)
+        if payload is None:
+            return {"live": False, "output": None, "context": None}
+        return {"live": True, **{k: v for k, v in payload.items() if k != "kind"}}
+
+    @app.put("/tasks/{task_id}/contract")
+    async def edit_contract(task_id: str, request: Request):
+        """Contract edits between steps (PRD §6.1/§6.8): rejected while the
+        task's orchestrator loop is live — answers are the only mid-run
+        amendment path."""
+        task = get_task_or_404(task_id)
+        if manager.running(task_id):
+            raise HTTPException(409, "task is running — pause it or wait for a "
+                                     "resting state; mid-run amendments happen "
+                                     "through answered questions")
+        if task.status in TERMINAL_TASK_STATUSES:
+            raise HTTPException(409, f"task is {task.status}")
+        body = await request.json()
+        data = body.get("contract")
+        errors = validate_contract(data or {})
+        if errors:
+            raise HTTPException(400, {"errors": errors})
+        contract = Contract.from_dict(data)
+        contract.repo = str(Path(contract.repo).expanduser().resolve())
+        store.save_contract(task_id, contract)
+        # Keep runtime step state in sync: preserve state for surviving
+        # step ids, add pending state for new ones, in contract order.
+        existing = {st.id: st for st in task.steps}
+        task.steps = [existing.get(s.id) or StepState(id=s.id)
+                      for s in contract.steps]
+        task.goal = contract.goal
+        store.save_task(task)
+        evt = store.append_event(task_id, "contract_edited",
+                                 data={"by": str(body.get("by", "dashboard"))})
+        await manager.broadcast(evt)
+        return {"contract": contract.to_dict()}
+
+    # ------------------------------------------------------------- memory
+
+    @app.get("/memory")
+    async def list_memory():
+        return {"projects": store.list_memory()}
+
+    @app.get("/memory/{project}")
+    async def get_memory(project: str):
+        if "/" in project or project.startswith("."):
+            raise HTTPException(400, "bad project name")
+        text = store.memory_for_project(project)
+        if text is None:
+            raise HTTPException(404, f"no memory for project: {project}")
+        return {"project": project, "text": text}
+
+    @app.post("/memory/{project}")
+    async def append_memory(project: str, request: Request):
+        if "/" in project or project.startswith("."):
+            raise HTTPException(400, "bad project name")
+        body = await request.json()
+        fact = str(body.get("fact", "")).strip()
+        if not fact:
+            raise HTTPException(400, "fact is required")
+        store.remember(project, fact)
+        return {"project": project, "text": store.memory_for_project(project)}
+
+    @app.put("/memory/{project}")
+    async def replace_memory(project: str, request: Request):
+        if "/" in project or project.startswith("."):
+            raise HTTPException(400, "bad project name")
+        body = await request.json()
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(400, "text is required (memory is never "
+                                     "silently deleted — abandon edits instead)")
+        store.write_memory(project, text)
+        return {"project": project, "text": store.memory_for_project(project)}
 
     # ---------------------------------------------------------- questions
 
@@ -345,5 +594,27 @@ def create_app(store: Store | None = None, autostart: bool = True,
             pass
         finally:
             manager.sockets.discard(ws)
+
+    # ---------------------------------------------------------- dashboard
+    # The built SPA (dashboard/dist) is served at /ui; the SPA itself is a
+    # thin client that only talks to this API. Absent a build, / still
+    # answers with a pointer instead of a 404.
+
+    dist = dashboard_dist()
+    if dist is not None:
+        app.mount("/ui", StaticFiles(directory=str(dist), html=True),
+                  name="dashboard")
+
+        @app.get("/")
+        async def root():
+            return RedirectResponse("/ui/")
+    else:
+
+        @app.get("/")
+        async def root():
+            return {"ok": True,
+                    "hint": "dashboard build not found — run `pnpm build` in "
+                            "dashboard/ (or set FM_DASHBOARD_DIST)",
+                    "api": "/status"}
 
     return app

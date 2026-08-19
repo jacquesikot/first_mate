@@ -11,6 +11,7 @@ first_mate/
 ├── CLAUDE.md                   agent context + session protocol (auto-loaded by Claude Code)
 ├── STATUS.md                   living project status / hand-off log — agents read first, update last
 ├── daemon/                     the fm daemon (Python) — orchestrator, API, CLI; see daemon/README.md
+├── dashboard/                  the web dashboard (React/TypeScript SPA, Phase 3)
 └── prototype/
     ├── First Mate System Prototype.html   clickable UI prototype (open in a browser)
     └── support.js                         runtime the prototype HTML loads
@@ -21,6 +22,22 @@ first_mate/
 The full specification: vision, jobs to be done, architecture, per-subsystem requirements, technology direction, delivery phases, and acceptance criteria. This is the handoff document — an implementing agent should be able to build from it without further context.
 
 **Status:** agreed. Phase 0 (the context-relay spike) is the recommended starting point and the go/no-go for the whole design.
+
+## dashboard/
+
+The real web dashboard (Phase 3): a thin React/TypeScript client over the
+daemon API, visually translated from the prototype below. Build once with
+`cd dashboard && pnpm install && pnpm build`; the daemon then serves it at
+`http://127.0.0.1:<port>/ui/` (`fm serve --open`). For UI development,
+`pnpm dev` proxies API + WebSocket calls to a locally running daemon.
+
+Views: **Now** (needs-you queue, live sessions with streamed output,
+settled list), **Tasks** (board grouped by lifecycle), **Task detail**
+(step timeline with the generation rail and handoff briefs, criteria with
+validation evidence, contract render/edit between steps, changed files +
+diff viewer, live output, question history), **Inbox**, **Memory**
+(view/edit/append), **New task** (contract submission; the scoping
+conversation itself stays in the terminal for now).
 
 ## prototype/First Mate System Prototype.html
 

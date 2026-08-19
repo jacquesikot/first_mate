@@ -84,6 +84,48 @@ def diff_stat(worktree: Path) -> str:
     return _git(worktree, "diff", "HEAD", "--stat").stdout
 
 
+def numstat_files(worktree: Path) -> list[dict]:
+    """Per-file (added, deleted) vs HEAD for tracked changes, plus
+    untracked files (line counts from the file itself). Binary files
+    report None counts."""
+    out = _git(worktree, "diff", "HEAD", "--numstat").stdout
+    files: list[dict] = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        files.append({
+            "path": parts[2],
+            "added": int(parts[0]) if parts[0].isdigit() else None,
+            "deleted": int(parts[1]) if parts[1].isdigit() else None,
+            "untracked": False,
+        })
+    ls = _git(worktree, "ls-files", "--others", "--exclude-standard").stdout
+    for path in ls.splitlines():
+        if not path.strip():
+            continue
+        added = None
+        try:
+            with (worktree / path).open("rb") as f:
+                added = sum(1 for _ in f)
+        except OSError:
+            pass
+        files.append({"path": path, "added": added, "deleted": 0, "untracked": True})
+    return files
+
+
+def diff_file(worktree: Path, path: str) -> str:
+    """Unified diff vs HEAD for one file; untracked files diff against
+    /dev/null (git exits 1 when the files differ — not an error)."""
+    tracked = _git(
+        worktree, "ls-files", "--error-unmatch", "--", path, check=False
+    ).returncode == 0
+    if tracked:
+        return _git(worktree, "diff", "HEAD", "--", path).stdout
+    proc = _git(worktree, "diff", "--no-index", "--", "/dev/null", path, check=False)
+    return proc.stdout
+
+
 def diff_numstat(worktree: Path) -> tuple[int, int]:
     """(added, deleted) line totals vs HEAD for tracked files. Binary
     files report '-' in numstat and are counted as 0."""

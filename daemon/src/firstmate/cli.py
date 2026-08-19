@@ -76,7 +76,7 @@ def cmd_serve(args) -> int:
     if args.open:
         import webbrowser
 
-        webbrowser.open(url + "/status")
+        webbrowser.open(url + "/")  # redirects to /ui/ when the SPA is built
     print(f"fm daemon on {url} (state: {store.home})")
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
     return 0
