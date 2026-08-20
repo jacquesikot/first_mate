@@ -146,6 +146,14 @@ Multi-stage work (plan → implement → review, research pipelines, transcripti
 - The orchestrator runs/collects all criterion checks at step and task boundaries; a task cannot reach `done` with unmet criteria.
 - Validation evidence (test output, screenshots, diff stats) is stored with the task and visible in the dashboard.
 
+### 6.7b Disk retention and cleanup
+
+- A task's worktree is where the work physically happened, so **removing one is never automatic**. Finished tasks post a *non-blocking* cleanup notice carrying the numbers (total size, how much is regenerable dependencies, and whether it is safe); the task reaches `done` regardless, since housekeeping must not hold a completed task open.
+- Removal happens only when the owner asks: `fm clean` (report by default; `--all`, `--task <id>`, `--dry-run`, `--deps-only`, `--force`) or the dashboard's per-task reclaim control, available on any finished task rather than only the one that just finished.
+- **The safety bar:** a worktree is removed only when its tree is clean *and* every commit is reachable from a remote. Uncommitted files or unpushed commits exist nowhere else, so they block removal and the reason is reported verbatim; only `--force` overrides, per invocation. Anything indeterminate counts as a blocker — "I'm not sure" must never lead to a deletion. First Mate's own `.fm/` state never counts as the owner's work. Only the task's own `fm/*` branch is ever deleted.
+- **Regenerable vs irreplaceable.** Dependency and build directories (`node_modules`, `.venv`, `target`, …, found at any depth — a monorepo keeps them under `frontend/`, not the root) are typically the overwhelming majority of a worktree's size and cost an install to rebuild, so they may be dropped from a worktree that is *kept* for its unpushed work, and are dropped automatically once a worktree has been idle past a threshold. Nothing else is ever deleted without an explicit ask.
+- **Task state is the audit trail and is never deleted.** `task.json`, the contract, `events.jsonl`, validation evidence and supervisor diagnoses are kilobytes and are what make a task diagnosable long afterwards. Finished tasks' state is compressed into `archive/` after a threshold, keeping the data while `tasks/` stays browsable. Smoke-test run directories are throwaway and are pruned by age.
+
 ### 6.8 Web dashboard
 
 Served by the daemon at `localhost:<port>`; opens automatically with `fm serve --open`. Visual direction: near-monochrome dark theme with a single amber accent reserved for attention (needs-input alerts, active selection), status carried by glyphs (`●` running, `◔` waiting on a gate, `◐` blocked, `✓` done, `✗` failed), fixed-column metrics, filenames prominent with directories de-emphasised, desaturated diff colors.

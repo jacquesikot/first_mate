@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import replan, scoping_api
+from . import cleanup, replan, scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
@@ -1097,6 +1097,58 @@ def create_app(store: Store | None = None, autostart: bool = True,
                                      "silently deleted — abandon edits instead)")
         store.write_memory(project, text)
         return {"project": project, "text": store.memory_for_project(project)}
+
+    # ------------------------------------------------------------ cleanup
+
+    @app.get("/cleanup")
+    async def cleanup_report():
+        """What disk could be reclaimed, and what is holding each item."""
+        cands = await asyncio.to_thread(cleanup.candidates, store)
+        smoke = await asyncio.to_thread(cleanup.dir_size, store.home / "smoke")
+        return {
+            "candidates": [c.to_dict() for c in cands],
+            "total_bytes": sum(c.bytes for c in cands),
+            "dep_bytes": sum(c.dep_bytes for c in cands),
+            "smoke_bytes": smoke,
+        }
+
+    @app.post("/tasks/{task_id}/cleanup")
+    async def cleanup_task(task_id: str, request: Request):
+        """Reclaim one task's disk. `mode` is "worktree" (remove it) or
+        "deps" (drop regenerable directories, keep the code).
+
+        Refuses a worktree holding uncommitted or unpushed work unless
+        `force` is set, and never touches a task that is still live."""
+        task = get_task_or_404(task_id)
+        body = await request.json() if await request.body() else {}
+        mode = str(body.get("mode", "worktree"))
+        force = bool(body.get("force"))
+        if manager.running(task_id):
+            raise HTTPException(409, "task is running — pause it first")
+        cand = await asyncio.to_thread(cleanup.inspect, task)
+        if cand is None:
+            raise HTTPException(404, "no worktree on disk for this task")
+        if mode == "deps":
+            freed, names = await asyncio.to_thread(
+                cleanup.drop_deps, Path(cand.worktree))
+            evt = store.append_event(task_id, "cleanup_deps",
+                                     data={"freed": freed, "removed": names})
+            await manager.broadcast(evt)
+            return {"mode": "deps", "freed": freed,
+                    "size": cleanup.human(freed), "removed": names}
+        if mode != "worktree":
+            raise HTTPException(400, f"unknown cleanup mode: {mode}")
+        ok, msg = await asyncio.to_thread(cleanup.remove, store, task, force)
+        if not ok:
+            # 409 rather than 500: the state is the reason, and the message
+            # names it so the operator can decide about --force.
+            raise HTTPException(409, {"error": msg, "blockers": cand.blockers,
+                                      "bytes": cand.bytes})
+        evt = store.append_event(task_id, "cleanup_worktree",
+                                 data={"freed": cand.bytes, "forced": force})
+        await manager.broadcast(evt)
+        return {"mode": "worktree", "freed": cand.bytes,
+                "size": cleanup.human(cand.bytes), "message": msg}
 
     # ---------------------------------------------------------- questions
 

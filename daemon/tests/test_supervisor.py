@@ -240,11 +240,12 @@ def test_stalled_gate_is_repaired_and_the_job_proceeds(tmp_path, monkeypatch):
 
     # ...the operator was told, but not stopped.
     qs = store.list_questions(task_id="t1")
-    assert len(qs) == 1
-    assert qs[0].type == "fyi" and qs[0].status == "noted"
+    repair = [q for q in qs if q.evidence.get("old_command")]
+    assert len(repair) == 1
+    assert repair[0].type == "fyi" and repair[0].status == "noted"
     assert not [q for q in qs if q.status == "open"]
-    assert qs[0].evidence["old_command"] == "test -f cubic-review-for-head"
-    assert qs[0].evidence["new_command"] == fixed
+    assert repair[0].evidence["old_command"] == "test -f cubic-review-for-head"
+    assert repair[0].evidence["new_command"] == fixed
 
     events = [e["event"] for e in store.events_tail("t1", 300)]
     assert "gate_supervising" in events and "gate_repaired" in events
@@ -294,8 +295,10 @@ def test_still_waiting_verdict_leaves_the_gate_alone(tmp_path, monkeypatch):
     asyncio.run(scenario())
     assert store.load_task("t1").status == "done"
     assert calls == ["verify"]
-    # No FYI: nothing was changed, so there is nothing to report.
-    assert not store.list_questions(task_id="t1")
+    # No gate-repair FYI: nothing was changed, so there is nothing to
+    # report. (A finished task always gets a cleanup notice; that's not this.)
+    assert not [q for q in store.list_questions(task_id="t1")
+                if "gate" in q.question.lower()]
 
 
 def test_supervision_is_bounded_and_the_escalation_carries_findings(

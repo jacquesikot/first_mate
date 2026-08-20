@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
   DiffInfo, TaskDetail, StepState, CriterionResult, LivePayload, Gate, GateState,
+  CleanupCandidate, Task,
 } from "../api";
 import { api, socket } from "../api";
 import {
@@ -1259,10 +1260,116 @@ function ScopingSidebar({ detail }: { detail: TaskDetail }) {
           >
             {task.worktree}
           </div>
+          <Reclaim task={task} />
         </div>
       )}
     </div>
   );
+}
+
+/** Reclaim a finished task's disk. Deliberately explicit: the numbers are
+ *  shown before anything is offered, removal is refused while work exists
+ *  only here, and dropping dependencies is presented as the safe option
+ *  because it is — an install rebuilds them. */
+function Reclaim({ task }: { task: Task }) {
+  const { refresh, toast } = useApp();
+  const [cand, setCand] = useState<CleanupCandidate | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .cleanupReport()
+      .then((r) => {
+        if (alive) setCand(r.candidates.find((c) => c.task_id === task.id) ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [task.id, task.status, task.worktree]);
+
+  if (!cand || !cand.bytes) return null;
+
+  const act = async (mode: "worktree" | "deps", force = false) => {
+    if (busy) return;
+    if (mode === "worktree") {
+      const warn = force
+        ? `Remove this worktree AND lose work that exists nowhere else?\n\n${cand.blockers.join("\n")}`
+        : `Remove ${cand.size} at ${cand.worktree}?`;
+      if (!window.confirm(warn)) return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.cleanupTask(task.id, mode, force);
+      toast(
+        mode === "deps" ? `Dropped ${r.size} of dependencies` : `Freed ${r.size}`,
+        mode === "deps"
+          ? "the code and git history are untouched — an install rebuilds these"
+          : "worktree and task branch removed",
+        "ok"
+      );
+      refresh();
+      setCand(null);
+    } catch (e) {
+      toast("Cleanup failed", String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dep = cand.dep_bytes > 0;
+  return (
+    <div
+      style={{
+        borderTop: "1px solid var(--bd2)",
+        paddingTop: 9,
+        display: "flex",
+        flexDirection: "column",
+        gap: 7,
+      }}
+    >
+      <span className="mono" style={{ fontSize: 10.5, color: "var(--tx3)" }}>
+        using {cand.size}
+        {dep ? ` · ${humanBytes(cand.dep_bytes)} of it rebuildable` : ""}
+      </span>
+      {!cand.safe && (
+        <span style={{ fontSize: 11.5, color: "var(--tx3)", overflowWrap: "anywhere" }}>
+          keeping it: {cand.blockers.join("; ")}
+        </span>
+      )}
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+        {dep && (
+          <button className="btn" disabled={busy} onClick={() => act("deps")}>
+            drop dependencies
+          </button>
+        )}
+        {cand.safe ? (
+          <button className="btn" disabled={busy} onClick={() => act("worktree")}>
+            remove worktree
+          </button>
+        ) : (
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() => act("worktree", true)}
+            title="Destroys the uncommitted or unpushed work listed above"
+          >
+            remove anyway
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function humanBytes(n: number): string {
+  let size = n;
+  for (const unit of ["B", "KB", "MB"]) {
+    if (size < 1024) return unit === "B" ? `${Math.round(size)}B` : `${size.toFixed(1)}${unit}`;
+    size /= 1024;
+  }
+  return `${size.toFixed(1)}GB`;
 }
 
 function Meta({ k, v, color, sub }: { k: string; v: string; color: string; sub?: string }) {

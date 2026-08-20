@@ -34,7 +34,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import guard, relay, spawner, supervisor, validation, workerfiles
+from . import (
+    cleanup, guard, relay, spawner, supervisor, validation, workerfiles,
+)
 from .exec import context, gitops, tmux
 from .models import (
     Contract, GateState, Question, SessionRecord, StepSpec, StepState, Task,
@@ -233,6 +235,7 @@ class TaskRunner:
             return
         await self._set_status(task, "done")
         await self.emit("task_done")
+        await self._offer_cleanup(task)
 
     # ---------------------------------------------------------------- step
 
@@ -817,6 +820,59 @@ class TaskRunner:
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+
+    async def _offer_cleanup(self, task: Task) -> None:
+        """Offer to reclaim the task's worktree, without blocking on it.
+
+        A finished task should not sit open waiting on housekeeping, and
+        nothing is ever deleted from this notice alone — it carries the
+        numbers and the operator (or `fm clean`) does the removing.
+        """
+        try:
+            cand = await asyncio.to_thread(cleanup.inspect, task)
+        except Exception:
+            return
+        if cand is None or not cand.bytes:
+            return
+        detail = (f"Its worktree is using {cleanup.human(cand.bytes)}"
+                  + (f", of which {cleanup.human(cand.dep_bytes)} is "
+                     f"regenerable dependencies" if cand.dep_bytes else "")
+                  + ".")
+        if cand.safe:
+            detail += (" Everything here is committed and pushed, so removing "
+                       "it loses nothing.")
+        else:
+            detail += (" NOT safe to remove as-is: "
+                       + "; ".join(cand.blockers)
+                       + ". Dropping just the dependencies is still safe.")
+        q = Question(
+            id=new_id("q"),
+            task_id=task.id,
+            step_id=None,
+            type="fyi",
+            urgency="normal",
+            status="noted",
+            question=f"Task finished. {detail} Clean it up when you like: "
+                     f"`fm clean --task {task.id}`"
+                     + ("" if cand.safe else " --force")
+                     + f" (or `fm clean --task {task.id} --deps-only`).",
+            evidence={
+                "cleanup": True,
+                "task_id": task.id,
+                "worktree": cand.worktree,
+                "bytes": cand.bytes,
+                "dep_bytes": cand.dep_bytes,
+                "size": cleanup.human(cand.bytes),
+                "dep_size": cleanup.human(cand.dep_bytes),
+                "safe": cand.safe,
+                "blockers": cand.blockers,
+            },
+        )
+        q.fingerprint = question_fingerprint(q.type, q.evidence, q.question)
+        self.store.save_question(q)
+        await self.emit("cleanup_offered", question_id=q.id,
+                        bytes=cand.bytes, dep_bytes=cand.dep_bytes,
+                        safe=cand.safe)
 
     # ------------------------------------------------ criterion judgement
 

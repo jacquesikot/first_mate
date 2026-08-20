@@ -254,6 +254,138 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_clean(args) -> int:
+    """Reclaim disk from finished tasks. Never runs on its own; nothing is
+    removed that isn't reachable from a remote (without --force)."""
+    from . import cleanup
+    from .store import Store
+
+    store = Store()
+
+    if args.maintenance:
+        cfg = store.config()
+        rep = cleanup.maintenance(
+            store,
+            deps_after_days=float(cfg.get("clean_deps_after_days", 3)),
+            archive_after_days=float(cfg.get("archive_tasks_after_days", 14)),
+            smoke_keep_days=float(args.smoke_keep_days),
+            dry_run=args.dry_run,
+        )
+        verb = "would drop" if args.dry_run else "dropped"
+        for d in rep["deps"]:
+            print(f"{verb} deps from {d['task_id']} "
+                  f"({cleanup.human(d['bytes'])}, idle {d['idle_days']:.0f}d)")
+        for a in rep["archived"]:
+            print(f"{'would archive' if args.dry_run else 'archived'} "
+                  f"{a['task_id']} state ({a['age_days']:.0f}d old)")
+        if rep["smoke_runs"]:
+            print(f"pruned {rep['smoke_runs']} smoke run(s)")
+        print(f"\n{'would free' if args.dry_run else 'freed'} "
+              f"{cleanup.human(rep['freed'])}")
+        return 0
+
+    cands = cleanup.candidates(store)
+
+    if args.task:
+        cands = [c for c in cands if c.task_id == args.task]
+        if not cands:
+            print(f"fm: no worktree on disk for task {args.task}",
+                  file=sys.stderr)
+            return 1
+    elif not args.all:
+        # Default: report only. Deleting a worktree is the most
+        # destructive thing here, so it takes an explicit ask.
+        _print_clean_report(cands, cleanup)
+        smoke = cleanup.dir_size(store.home / "smoke")
+        if smoke:
+            print(f"\nsmoke runs: {cleanup.human(smoke)} in {store.home / 'smoke'}")
+        print("\nnothing removed. To act:")
+        print("  fm clean --all              remove every safe worktree")
+        print("  fm clean --task <id>        remove one task's worktree")
+        print("  fm clean --deps-only        drop node_modules etc, keep the code")
+        print("  fm clean --all --dry-run    show exactly what --all would do")
+        return 0
+
+    if args.dry_run:
+        print("(dry run — nothing will be removed)\n")
+
+    freed = 0
+    removed = kept = 0
+    for c in cands:
+        task = store.load_task(c.task_id)
+        if task is None:
+            continue
+        if args.deps_only:
+            if args.dry_run:
+                print(f"would drop deps from {c.task_id}: "
+                      f"{cleanup.human(c.dep_bytes)}")
+                freed += c.dep_bytes
+                continue
+            got, names = cleanup.drop_deps(Path(c.worktree))
+            freed += got
+            if names:
+                removed += 1
+                print(f"{c.task_id}: dropped {', '.join(names)} "
+                      f"({cleanup.human(got)})")
+            continue
+
+        if not c.safe and not args.force:
+            kept += 1
+            print(f"kept {c.task_id}: {'; '.join(c.blockers)}")
+            # The code is worth keeping; its dependencies are not.
+            if c.dep_bytes and not args.dry_run and args.drop_kept_deps:
+                got, names = cleanup.drop_deps(Path(c.worktree))
+                if names:
+                    freed += got
+                    print(f"     dropped {', '.join(names)} "
+                          f"({cleanup.human(got)}) — rebuild with an install")
+            continue
+        if args.dry_run:
+            print(f"would remove {c.task_id} ({cleanup.human(c.bytes)})"
+                  + (" [FORCED]" if not c.safe else ""))
+            freed += c.bytes
+            continue
+        ok, msg = cleanup.remove(store, task, force=args.force)
+        if ok:
+            removed += 1
+            freed += c.bytes
+            print(f"{c.task_id}: {msg}")
+        else:
+            kept += 1
+            print(f"kept {c.task_id}: {msg}")
+
+    if args.all and not args.deps_only:
+        runs, sfreed = (0, 0) if args.dry_run else cleanup.prune_smoke_runs(
+            store.home, keep_days=float(args.smoke_keep_days))
+        if runs:
+            print(f"pruned {runs} smoke run(s) ({cleanup.human(sfreed)})")
+            freed += sfreed
+
+    verb = "would free" if args.dry_run else "freed"
+    print(f"\n{verb} {cleanup.human(freed)}"
+          + (f" · removed {removed}" if removed else "")
+          + (f" · kept {kept}" if kept else ""))
+    return 0
+
+
+def _print_clean_report(cands, cleanup) -> None:
+    if not cands:
+        print("no task worktrees on disk")
+        return
+    total = sum(c.bytes for c in cands)
+    deps = sum(c.dep_bytes for c in cands)
+    print(f"{len(cands)} task worktree(s), {cleanup.human(total)} total "
+          f"({cleanup.human(deps)} of it regenerable dependencies)\n")
+    for c in cands:
+        mark = "safe to remove" if c.safe else "KEEP"
+        print(f"  {c.task_id}")
+        print(f"    {c.status:10} {cleanup.human(c.bytes):>9}  "
+              f"deps {cleanup.human(c.dep_bytes):>9}  idle {c.idle_days:.0f}d"
+              f"  {mark}")
+        for b in c.blockers:
+            print(f"      · {b}")
+
+
 def cmd_status(_args) -> int:
     try:
         data = api("GET", "/status")
@@ -482,6 +614,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("run", help="start/resume an approved task")
     sp.add_argument("task")
     sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("clean", help="reclaim disk from finished tasks")
+    sp.add_argument("--all", action="store_true",
+                    help="act on every finished task (default: report only)")
+    sp.add_argument("--task", help="act on one task by id")
+    sp.add_argument("--force", action="store_true",
+                    help="remove even with uncommitted or unpushed work "
+                         "(destroys work that exists nowhere else)")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="show what would happen, change nothing")
+    sp.add_argument("--deps-only", action="store_true",
+                    help="drop node_modules/.venv/target, keep the worktree")
+    sp.add_argument("--drop-kept-deps", action="store_true",
+                    help="also drop deps from worktrees kept for their work")
+    sp.add_argument("--smoke-keep-days", type=float, default=3.0,
+                    help="prune smoke runs older than this (default 3)")
+    sp.add_argument("--maintenance", action="store_true",
+                    help="idle housekeeping only: drop deps from worktrees "
+                         "idle 3+ days, archive task state finished 14+ days "
+                         "ago, prune old smoke runs. Never removes a worktree.")
+    sp.set_defaults(func=cmd_clean)
 
     sp = sub.add_parser("status", help="tasks, steps, questions at a glance")
     sp.set_defaults(func=cmd_status)

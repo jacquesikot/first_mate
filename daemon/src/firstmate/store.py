@@ -49,6 +49,10 @@ DEFAULT_CONFIG = {
     # work fix this, or is the check asserting something unreachable?
     "supervise_criteria": True,
     "max_criteria_supervisions": 2,
+    # Housekeeping (`fm clean --maintenance`). Worktree removal is never
+    # automatic; these only touch regenerable or archivable things.
+    "clean_deps_after_days": 3,
+    "archive_tasks_after_days": 14,
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,

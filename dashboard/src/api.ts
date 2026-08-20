@@ -55,6 +55,21 @@ export interface ReplanOutcome {
   errors?: string[];
 }
 
+/** Reclaimable disk for one task, and what is holding it. */
+export interface CleanupCandidate {
+  task_id: string;
+  status: string;
+  worktree: string;
+  branch: string;
+  repo: string;
+  bytes: number;
+  dep_bytes: number;
+  blockers: string[];
+  idle_days: number;
+  safe: boolean;
+  size: string;
+}
+
 export interface SessionRecord {
   session_id: string;
   generation: number;
@@ -381,6 +396,19 @@ export const api = {
       "POST",
       `/questions/${qid}/answer`,
       { answer, by: "dashboard" }
+    ),
+  cleanupReport: () =>
+    req<{
+      candidates: CleanupCandidate[];
+      total_bytes: number;
+      dep_bytes: number;
+      smoke_bytes: number;
+    }>("GET", "/cleanup"),
+  cleanupTask: (id: string, mode: "worktree" | "deps", force = false) =>
+    req<{ mode: string; freed: number; size: string; removed?: string[] }>(
+      "POST",
+      `/tasks/${id}/cleanup`,
+      { mode, force }
     ),
   createTask: (contract: unknown, run: boolean) =>
     req<{ task: Task; started: boolean }>("POST", "/tasks", { contract, run }),

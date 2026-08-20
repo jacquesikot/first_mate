@@ -288,6 +288,24 @@ def diff_numstat(worktree: Path) -> tuple[int, int]:
     return added, deleted
 
 
+def unpushed_commits(worktree: Path) -> list[str] | None:
+    """Commits in this worktree that exist on no remote.
+
+    Returns a list of `<sha> <subject>` lines (empty when everything is
+    reachable from some remote ref), or None when it cannot be determined —
+    callers treat None as "assume unpushed" so cleanup stays conservative.
+    """
+    # `HEAD` is required: without a positive revision, `--not --remotes`
+    # gives git nothing to subtract FROM and it reports nothing at all —
+    # which would declare a worktree holding unpushed commits safe to
+    # delete. Caught by a test, not by reading.
+    proc = _git(worktree, "log", "--oneline", "HEAD", "--not", "--remotes",
+                check=False)
+    if proc.returncode != 0:
+        return None
+    return [ln for ln in proc.stdout.splitlines() if ln.strip()]
+
+
 def head_commit(repo: Path) -> str:
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
 
