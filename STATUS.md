@@ -3,7 +3,7 @@
 > Living hand-off log. Every session reads this first and updates it before ending.
 > Protocol: see `CLAUDE.md`. Spec: see `PRD.md`.
 
-**Current phase:** Phase 4, first half. **The memory loop is done and live-verified (2026-08-20)** — First Mate now learns from steps that struggled, offers to promote answers that recur across tasks, and consolidates a memory file that has grown too large, all without ever writing the operator's memory unasked. 232 daemon tests + 13 dashboard tests pass; extraction, refusal and compaction verified against real `claude` calls. **Next: the Slack connector** — the other half of Phase 4, which needs a Slack app and tokens from Jacques before it can be live-verified.
+**Current phase:** Phase 4, first half. **The memory loop is done and live-verified (2026-08-20)** — First Mate learns from steps that struggled, offers to promote answers that recur across tasks, and consolidates a memory file that has grown too large, all without ever writing the operator's memory unasked. **Also done and live-verified (2026-08-20, session 9): skill-driven steps.** A skill's questions now arrive as an answerable *round* (`fm ask --round`: per-question options, one interruption) instead of one flattened blob with a fake button, and a skill's own progress survives a context wall in `.fm/skill-state.json` instead of being re-derived from prose every generation. 273 daemon tests + 24 dashboard tests pass. **Next: the Slack connector** — the other half of Phase 4, which needs a Slack app and tokens from Jacques before it can be live-verified.
 
 ---
 
@@ -34,6 +34,17 @@ outstanding.
    `apply_structured_answer` → `needs_replan` → `replan.py`, and now also
    raises cross-task promotion suggestions. Reuse it and all of that comes
    for free; reimplement it and none of it does.
+   **New since session 9 — a question may be a *round*.** If
+   `question.questions` is non-empty, the preamble is `question` and each
+   entry is answered on its own; `options` is empty (deliberately — a
+   whole-round button is what produced the phantom-answer bug). Post
+   `{"answers": {"<sub-id>": "<choice>", …}}` with an entry for every
+   sub-question, or `{"answer": "<one reply>"}` to apply one reply to all
+   of them; a partial `answers` map is a 400 naming what's missing. In
+   Slack terms that is one message per round with a block per
+   sub-question, not one button set — and the round is not resolved until
+   all of them are answered, so the thread has to hold partial state or
+   submit per-question and let the last one resolve it.
    Also: `remember: <fact>` appends to project memory (`store.remember`,
    or `POST /memory/{project}`), and a minimal command set — `status`,
    `pause <task>`, `abandon <task>`.
@@ -85,26 +96,56 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
   the system's own observation) but a *recurring operator answer* only ever
   becomes a pending suggestion. Never fatal — a failed extraction cannot
   fail a step that already validated.
+- **`skillstate.py`** — `.fm/skill-state.json` per worktree: the durable
+  progress of a *skill* run (skill, phase, phases_done, findings, decided,
+  outstanding, artifacts). Written by the worker via `fm skill`, injected
+  into every generation **ahead of** the prose handoff and labelled
+  authoritative. `merge()` **unions lists** and merges dicts key-wise —
+  a session recording one new finding must not drop the nine an earlier
+  one established. Seeded automatically when `steps[].skill` is set. The
+  relay's skill path (`relay.request_handoff(..., skill=...)`) tells the
+  dying session to flush state before writing prose, and grants it only
+  `Bash(fm skill:*),Read`.
+- **Questions may be *rounds*.** `Question.questions` (a list of
+  `SubQuestion`, each with its own `Option`s and a `recommended` flag) is
+  non-empty when a worker asked several things at once via
+  `fm ask --round`; `question` is then the shared preamble and `options`
+  is empty **by design** — a whole-round button is what produced the
+  phantom-answer bug. `store.answer_question(..., answers={...})` requires
+  an answer for every sub-question. Anything consuming questions (Slack
+  next) must handle both shapes.
 - **Guard:** `.fm/artifacts/` is always writable and git-invisible; lockfiles
   pass the hook while manifests still trip it (a step-boundary check catches
   real drift); a refusal answer rewrites the offending step prompt.
+  `fm ask` and `fm skill` are granted to every worker and pass the guard
+  (verified) — recording progress is never a privilege decision.
 
 ## In progress
 
-- **Nothing of mine.** The memory-loop and dashboard work is complete,
-  tested, live-verified and committed. The daemon is running the current
-  code with the dashboard built (bundle `index-Doc1pSrj.js`).
+- **Nothing of mine.** The round/skill-state work (session 9) and the
+  memory loop (session 8) are complete, tested, live-verified and
+  committed. **The daemon must be restarted to pick up session 9** — it
+  was stopped at the end of the session, and the dashboard bundle is
+  rebuilt.
 - **One live task of Jacques's is parked and waiting on him** — not
-  session-8 work, and not to be "cleaned up" by a future session:
+  session-9 work, and not to be "cleaned up" by a future session:
   `i-want-to-complete-the-plann-1b69` ("produce an approved implementation
   plan for Linear issue ENG-654 … using the reach-plan skill"), on
-  `reach-app`. It reached generation 3 of the `plan` step and parked on
-  `q-4fb8815d`, a well-evidenced Round-1 decision question about where the
-  ranking/writing context UI should live relative to the existing
-  generation-context tab. It resumes by itself once answered
-  (`fm answer q-4fb8815d "<choice>"`, the dashboard inbox, or — once the
-  Slack half lands — Slack). Worth noting for the Slack work: this is
-  exactly the shape of question that should page.
+  `reach-app`. It parked on `q-4fb8815d` at generation 3.
+  **Read this before touching it:** that question is the *pre-fix* shape —
+  four questions flattened into one prose blob, plus the phantom
+  "See inline options per question" option. Session 9 fixed the mechanism
+  but deliberately did not rewrite the question already on disk, so the
+  dashboard still renders it as a legacy single question (covered by a
+  test). Two sane options: answer it in free text (each of the four forks
+  addressed in prose — that routes through `replan.py` as any free-text
+  answer does), or abandon it and re-scope, which is the only way to get
+  the new round UI *and* a `steps[].skill` on the contract. Re-scoping is
+  the better demonstration: the old contract predates both fixes, so its
+  `plan` step still carries `skill: null` and will not seed skill state.
+  Worth noting for the Slack work: a round is exactly the shape of
+  question that should page, and Slack's inbound path needs to handle
+  per-sub-question answers, not just one string.
 - **`replan.py` handled a junk amendment correctly, unprompted** — worth
   recording as the first unplanned field test of the session-7 re-planning
   path. That task carries a `q-4c56499f` ("test question" → "ignored",
@@ -121,6 +162,18 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
   same behaviour for free — and must not bypass it.
 
 ## Done
+
+- **2026-08-20** — **A skill's questions arrive as an answerable round, and a skill's progress survives a context wall (Jacques: "First Mate does not handle tasks that run a skill like reach-plan within the task well").** Diagnosed from `~/.firstmate/tasks/i-want-to-complete-the-plann-1b69/` rather than from the report: 25 minutes, 3 generations, 3 context walls, and the first real question only arrived on generation 3. Three separate defects, all now fixed and live-verified.
+
+  **(a) `fm ask` could not express a round, so the worker flattened one.** The CLI took a single `--question` string and a flat `--option` list. reach-plan's grilling model is *batched rounds* — 4-6 questions, each with its own options — so the worker did the only thing available: it crammed four questions and twelve options into one 2,400-character prose blob. That is the unreadable wall in Jacques's screenshot, and the cause is the **data model, not the renderer**. `fm ask --round <file.json>` now takes an array of questions, each with its own text, options, `default` and `recommended` flag; one park still costs one interruption. It reads a *file* (or `-`) on purpose: a prior generation lost a whole session to a multi-line heredoc being denied by the permission layer, so the round's prose never goes through the shell. `models.py` grows `SubQuestion`/`Option`; `Question.questions` is empty for a plain question, so every question already on disk keeps working.
+
+  **(b) "See inline options per question" was a real button that answered with that literal string.** The worker had nowhere to put "the options are in the text", so it invented an option; `QuestionCard` maps every `options[]` entry to a submit button, so clicking it posted that sentence as Jacques's binding answer. His click almost certainly *did* fire — it just answered with nonsense. A round now carries no top-level option (the server clears it), the dashboard renders one block per sub-question with its own buttons, and a round refuses to submit until every question is answered — with the missing ids named. Regression-covered in both suites.
+
+  **(c) A worker could park a *probe* with the operator.** Generation 2 sent `--question "test question"` to isolate a quoting error, which parked a meaningless real question and forced Jacques to answer, then disclaim, noise. `fm ask` now refuses placeholder text and anything under 15 characters, and tells the worker to fix the shape and send the real question instead. FYIs are exempt (they are recorded, not parked).
+
+  **(d) Skill state now survives the relay — this is what the slowness actually was.** The handoff was free prose (DONE/REMAINING/GOTCHAS) and nothing recorded *which skill was running, which phase it was in, or what it had established*. Compare `handoff-gen2.md` and `handoff-gen3.md`: gen3's DONE section is the same repo audit again, re-read because the prose told it not to trust the prior one. Three sessions of Explore agents to reach question one. New `skillstate.py` + `fm skill` keeps `.fm/skill-state.json` (skill, phase, phases_done, findings, decided, outstanding, artifacts) — flat and `jq`-readable per acceptance criterion 10. Lists **union** rather than replace, so a session recording one new finding cannot drop the nine an earlier one established. It is injected *before* the prose handoff and labelled authoritative, telling the successor "trust these, re-reading them is wasted context" — the exact inverse of what the real handoffs said. The relay's skill path now tells the dying session to flush state *first* (granted only `Bash(fm skill:*),Read` — no repo edits), then write prose covering only the delta. `steps[].skill` was `None` on the real task even though the whole step was "use the reach-plan skill", because the scoping prompt never explained the field — now documented, and the worker can declare or correct it at runtime.
+
+  **Live-verified against a running daemon, not just tests:** a 4-question round parked with `options: []` and per-question recommendations; a partial answer was rejected naming the three missing ids; the full answer recorded each decision separately and produced an auditable contract amendment; `test question` was refused; and `fm skill` accumulated state across two simulated generations with findings unioned and a resolved item dropped. 232 → 273 daemon tests, 13 → 24 dashboard tests.
 
 - **2026-08-20** — **The Memory view can create memory, not just edit it (Jacques: "can I have a way to add memory items from the dashboard directly?").** It was supposed to already — but the append box was gated on `selected`, which is only set once a memory file exists, so a fresh install rendered **zero input fields** and the empty state said "append below once a task creates one", i.e. go use the CLI. The one case that most wants a UI was the one case not covered. The box is now always present, with a project picker when there is no file yet, seeded from the existing `/fs/repos` endpoint the New-task picker already uses — memory files are keyed on the repo's directory name, so those suggestions are exactly the right candidates and no new endpoint was needed; recent-task repos are one-click chips. Append stays disabled until both a project and a fact are present, and a footer names the file that will be written. **An adjacent gap turned up while testing:** the project tabs only render with 2+ files and the picker only appeared when nothing was selected, so with exactly one project a second project's memory could never be started from the dashboard either — covered by an "add to another project…" toggle. Verified in headless Chromium from the real empty state: first entry creates the file and the view adopts it, repeat appends work, a second project can be created and switched to.
 
@@ -187,6 +240,9 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
 
 Decisions made outside the PRD, dated, with rationale. PRD §7 constraints are settled and not repeated here.
 
+- **2026-08-20** — **When an agent produces unusable output, suspect the schema before the prompt.** A worker flattened four questions into one unreadable blob and invented a fake option button. Neither was the model being careless: `fm ask` had one `--question` string and one flat `--option` list, so a batched round was inexpressible and "the options are in the text" had nowhere to live. Prompting harder would have produced a politer blob. The fix was to give the shape somewhere to go (`--round`, per-question options), and only then to teach the prompt to use it. The general rule for this codebase: if an agent's output is malformed in a *consistent* way, read the interface it was writing through before rewriting its instructions.
+- **2026-08-20** — **Durable state files carry progress across a context wall; prose carries only the delta.** The relay's DONE/REMAINING/GOTCHAS brief is written by a session that has just run out of context, and it degraded exactly as you'd expect: three successive generations of one task re-ran the same repo audit because each brief said "re-verify, don't trust the prior audit". Structured state (`.fm/skill-state.json`) is now the authoritative half and prose the commentary — which is the same principle PRD §7 already states for continuity ("state files, never long-lived conversations"), applied one level down to a *skill's own* progress rather than the task's. Lists union rather than replace, because the failure mode that matters is silently losing findings, not accumulating a stale one.
+- **2026-08-20** — **A worker must never be able to interrupt the operator with a test.** One generation sent `fm ask --question "test question"` to debug a quoting error; parking is a real interruption, so Jacques had to answer nonsense and then read a follow-up disclaiming it. `fm ask` now refuses placeholders and near-empty questions outright. Rejecting a probe mechanically is better than instructing against it, because the instruction is exactly what a worker debugging its own tooling has stopped attending to. Same instinct as the autonomy bar: interrupting for something that isn't a decision is a failure in its own right.
 - **2026-08-20** — **A pre-flight check must predict the real operation, not impose a stricter one.** `fm serve`'s port probe bound without `SO_REUSEADDR` while uvicorn binds with it, so the probe rejected starts uvicorn would have accepted. A guard that is stricter than the thing it guards produces false refusals, and false refusals train the operator to ignore it — which costs more than the check ever saved. If a check stands in for an operation, it must be configured identically to that operation.
 - **2026-08-20** — **Memory is the operator's data; the system may only ever suggest.** Extraction writes facts the *system* observed about the project, which is First Mate's own output. But a recurring answer is the *operator's* statement, so promoting it is a rewrite of their notes — it goes to a pending suggestion, never a silent append, however strong the evidence. Corollary: accepting a suggestion lets them reword it first, and dismissing one is recorded so the same situation is never offered twice. "Good evidence" is not consent.
 - **2026-08-20** — **Learning extraction is gated on struggle, not on success.** The obvious design (extract after every successful step) is what fills a memory file with "write tests" and trains every future session to skim past it. A step that passed on its first attempt demonstrably taught nothing, so the gate reads the step state the engine already keeps (attempt / generation / iteration / criteria_diagnoses) and costs nothing when it says no. Jacques chose this over per-step and per-task alternatives.
@@ -266,6 +322,7 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 
 One dated entry per working session: who/what/outcome, newest first.
 
+- **2026-08-20** — Session 9 (Claude, on Jacques's feedback that "First Mate does not handle tasks that run a skill like reach-plan within the task well"): two reported problems, both diagnosed from the real task's state files before any code was written. The jumbled unanswerable question was **a schema limit, not a rendering bug** — `fm ask` had one question string and one flat option list, so reach-plan's 4-question grilling round was inexpressible and the worker flattened it; the "See inline options per question" button Jacques clicked was a fake option the worker invented for want of anywhere to say "options are inline", and it submitted that sentence as his binding answer. The slowness was a *third* thing hiding behind the same task: 3 generations, 3 context walls, and gen3's handoff shows it re-running the entire repo audit for the third time because prose handoffs kept telling the successor not to trust the prior audit. Built `fm ask --round` (per-question options, `recommended`, one park per round, JSON via file so the round's prose never fights the shell), a dashboard card that renders and answers each question separately and refuses partial submission, a probe refusal so no worker can park "test question" again, and `skillstate.py`/`fm skill` — a `jq`-readable `.fm/skill-state.json` that is injected *ahead of* the prose handoff and labelled authoritative, with lists that union so a later session cannot drop an earlier one's findings. Also taught the scoping prompt what `steps[].skill` is for; it was `None` on the real task even though the step was literally "use the reach-plan skill". Live-verified against a running daemon (round parked with no phantom option, partial answer rejected naming the missing ids, full answer recorded per-decision into an auditable amendment, `test question` refused, state accumulated across two generations). 232 → 273 daemon tests, 13 → 24 dashboard tests. Jacques's parked ENG-654 task was deliberately left untouched — see In progress.
 - **2026-08-20** — Session 8 addendum (Claude, on Jacques asking for a way to add memory items from the dashboard): it was *supposed* to exist already — but the append box was gated on `selected`, which is only set once a memory file exists, so a fresh install could edit memory it had and never create the first entry. The empty state even said "append below once a task creates one", i.e. go use the CLI. Ungated it and added a project picker seeded from the existing `/fs/repos` endpoint (memory files are keyed on the repo's directory name, so the New-task picker's suggestions are exactly the right candidates — no new endpoint). Found the adjacent gap while testing: project tabs only render with 2+ files and the picker only showed when nothing was selected, so with exactly one project a second could never be started from the dashboard either — covered by an "add to another project…" toggle. Verified in headless Chromium from the real empty state.
 - **2026-08-20** — Session 8 (Claude, on "continue building this app"): built **Phase 4's first half, the memory loop**, after Jacques chose it over the Slack half (Slack needs an app + tokens from him before it can be live-verified, and this repo's habit is that live verification is where the real bugs are) and chose struggle-gated extraction over per-step or per-task. New `learning.py` plus wiring: extraction after a step that actually hit a wall, cross-task promotion of recurring answers as *suggestions only*, and compaction that archives before it rewrites and rejects a rewrite that gutted the file. The design work was mostly about what stops each writer — the prompt is instructed to refuse, and there are three mechanical filters behind it because a prompt is not a guarantee. **Live-verified against real `claude`:** extraction produced the intended fact on a real struggle from this repo's history and, more importantly, **refused twice** on struggles that taught nothing; compaction merged duplicates keeping the earliest date and resolved a contradiction with an explicit supersedes note, losing nothing. Promotion driven end to end through the running daemon and then the UI in headless Chromium (panel renders, dismiss clears, badge drops inside 2.5s). 192 → 232 daemon tests, 13 dashboard tests. Two bugs found by testing: the near-duplicate check missed two statements of one fact at 0.692/0.70 because trailing punctuation split tokens and "repo" carried no signal (fixed the tokenizer, not the threshold), and `fm memory promote --fact` echoed the suggested wording instead of the operator's override. A third bug, and the one I nearly wrote off: `fm serve` refused to start three times during verification with "port already in use", and I twice concluded the check was right and my `pkill` was racing the shutdown. It wasn't — the probe bound without `SO_REUSEADDR`, making it *stricter* than the bind it predicts (uvicorn sets the option on its own listener), so a `TIME_WAIT` socket from the daemon just stopped blocked a restart for up to a minute. What made it hard to see is that the error's own advice hides the cause: `lsof -sTCP:LISTEN` cannot see a `TIME_WAIT` socket, so the port reads as completely empty. Fixed, with both properties pinned by tests. **Next: the Slack connector, blocked only on tokens.**
 - **2026-08-20** — **Session 7 closed.** Jacques's report of two stuck real tasks turned into a full autonomy pass, driven end to end by his framing ("First Mate should be smart enough to sit and wait… and know what to ask me vs what is a runtime decision"; "the overseeing engine should see that the issue is his check gate, and fix it in the plan/contract"). Ten commits, all live-verified against real tasks and real workers rather than only tests: gates (waiting costs no session, slot or tokens), bounded convergence loops, `replan.py` (a prose answer rewrites the contract under validation), the supervisor (diagnoses and repairs its own broken gates; escalates at once on a criterion that can never pass — diagnosis-only by construction), four guard fixes that stopped the repeat-prompt loop, and never-automatic disk retention with `fm clean`. Test counts: 107 → 192 daemon, 13 dashboard; smoke scenarios 2 → 4, all passing with real sonnet workers. **Six bugs found by running the thing rather than reading it**, two of them serious: `fm serve` printed success after a failed port bind (so a "restart" silently kept old code serving — which cost a round trip in this very session), and `unpushed_commits` ran `git log --not --remotes` with no positive revision, so a worktree holding unpushed commits read as *safe to delete*. Also: `isinstance(True, int)` corrupting the loop-rewind cursor, git ignoring a linked worktree's own `info/exclude`, a root-only dep scan reporting 0B for a worktree that was 96% `node_modules`, and an idle clock that could never tick because it took `max()` over `.git`. Two UI misses of my own (reclaim block on the wrong sidebar; `index.html` cached so a rebuilt dashboard looked unchanged) — both now fixed, and the second was a genuine server bug worth having. **Next session: Phase 4, nothing outstanding from this one.**
