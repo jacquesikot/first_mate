@@ -104,6 +104,8 @@ def test_serve_refuses_a_port_already_in_use(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "already in use" in err
     assert "4242" in err, "names the pid from daemon.json so it can be found"
-    assert f"lsof -ti :{port}" in err
+    assert f"-iTCP:{port} -sTCP:LISTEN" in err, (
+        "must point at the LISTEN socket only — a bare `lsof -i :port` also "
+        "lists client connections, so it never reads as free")
     # The existing pointer must not be clobbered by the failed attempt.
     assert _json.loads(pointer.read_text())["pid"] == 4242

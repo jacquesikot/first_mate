@@ -88,9 +88,12 @@ def cmd_serve(args) -> int:
                 existing = f" (daemon.json says pid {json.loads(pointer.read_text()).get('pid')})"
             except (OSError, json.JSONDecodeError):
                 pass
+        # -sTCP:LISTEN matters: a bare `lsof -i :port` also lists every
+        # client connection (a browser tab on the dashboard, say), so it
+        # never reads as free and makes "wait for the port" loops hang.
         print(f"fm: port {port} is already in use{existing} — another daemon is "
               f"probably already running.\n"
-              f"    Check with: lsof -ti :{port}\n"
+              f"    Find it with: lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
               f"    Then either stop it, or run `fm serve --port <other>`.",
               file=sys.stderr)
         return 1
