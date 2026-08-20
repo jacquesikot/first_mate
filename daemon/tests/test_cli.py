@@ -109,3 +109,64 @@ def test_serve_refuses_a_port_already_in_use(tmp_path, monkeypatch, capsys):
         "lists client connections, so it never reads as free")
     # The existing pointer must not be clobbered by the failed attempt.
     assert _json.loads(pointer.read_text())["pid"] == 4242
+
+
+# ------------------------------------------------ `fm serve` port claiming
+
+def test_the_serve_probe_predicts_uvicorns_bind_not_a_stricter_one():
+    """A TIME_WAIT socket left by the daemon we just stopped must not read
+    as "another daemon is already running".
+
+    The probe exists so a failed bind can't be mistaken for a successful
+    restart. But without SO_REUSEADDR it is *stricter* than the bind it is
+    predicting: uvicorn sets the option on its own listener, so a port
+    holding only a TIME_WAIT socket is bindable in reality while the probe
+    refuses it — and the operator is told a daemon is running when `lsof
+    -sTCP:LISTEN` shows the port empty (observed live 2026-08-20).
+    """
+    import socket
+
+    # Stand in for the just-stopped daemon: a connection closed from the
+    # listening side leaves the local end in TIME_WAIT.
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    listener.listen(1)
+    client = socket.create_connection(("127.0.0.1", port))
+    server, _ = listener.accept()
+    server.close()          # active close → TIME_WAIT on the server side
+    client.close()
+    listener.close()
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(("127.0.0.1", port))  # must not raise
+    finally:
+        probe.close()
+
+
+def test_the_serve_probe_still_refuses_a_port_someone_is_listening_on():
+    """The property the probe was added for, which the fix must not lose."""
+    import socket
+
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    held.bind(("127.0.0.1", 0))
+    port = held.getsockname()[1]
+    held.listen(1)
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            raised = False
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                raised = True
+            assert raised, "a listening socket must still block the bind"
+        finally:
+            probe.close()
+    finally:
+        held.close()

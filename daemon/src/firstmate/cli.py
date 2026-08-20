@@ -78,6 +78,16 @@ def cmd_serve(args) -> int:
     # operator believing they restarted the daemon when the old one is
     # still running the old code (observed live 2026-08-20).
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # SO_REUSEADDR so the probe answers the question uvicorn will actually
+    # ask. Without it, a socket left in TIME_WAIT by the daemon we just
+    # stopped fails the bind for up to a minute, and the operator is told
+    # "another daemon is probably already running" when nothing is
+    # listening at all — `lsof -sTCP:LISTEN` shows an empty port, which
+    # makes the advice actively misleading (observed live 2026-08-20).
+    # uvicorn sets this on its own listener, so matching it here keeps the
+    # probe a truthful prediction of the real bind rather than a stricter
+    # test that rejects starts uvicorn would have accepted.
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
         probe.bind(("127.0.0.1", port))
     except OSError:
