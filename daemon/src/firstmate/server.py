@@ -1323,7 +1323,26 @@ def create_app(store: Store | None = None, autostart: bool = True,
 
     dist = dashboard_dist()
     if dist is not None:
-        app.mount("/ui", StaticFiles(directory=str(dist), html=True),
+        class SpaFiles(StaticFiles):
+            """StaticFiles that never lets the browser cache the entry point.
+
+            Vite content-hashes the assets, so those are safe to cache
+            forever — but `index.html` names which hash to load. With no
+            cache-control header a browser caches it heuristically and keeps
+            requesting the PREVIOUS bundle, so a rebuilt dashboard looks
+            unchanged no matter how many times the daemon restarts (observed
+            live 2026-08-20 — it cost an operator a round trip).
+            """
+
+            async def get_response(self, path: str, scope):
+                resp = await super().get_response(path, scope)
+                if path in ("", ".", "/", "index.html") or path.endswith(".html"):
+                    resp.headers["cache-control"] = "no-cache, must-revalidate"
+                elif "/assets/" in f"/{path}":
+                    resp.headers["cache-control"] = "public, max-age=31536000, immutable"
+                return resp
+
+        app.mount("/ui", SpaFiles(directory=str(dist), html=True),
                   name="dashboard")
 
         @app.get("/")
