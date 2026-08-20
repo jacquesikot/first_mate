@@ -1107,7 +1107,7 @@ function ArtifactsTab({ taskId }: { taskId: string }) {
             <span className="truncate" style={{ color: "var(--tx4)", maxWidth: 340 }}>
               {worktree}/.fm/artifacts
             </span>
-            <CopyButton text={`${worktree}/.fm/artifacts`} />
+            <CopyButton text={`${worktree}/.fm/artifacts`} label="copy path" />
           </span>
         )}
       </div>
@@ -1176,25 +1176,55 @@ function ArtifactsTab({ taskId }: { taskId: string }) {
               <span className="mono" style={{ fontSize: 11.5, color: "var(--tx3)" }}>
                 {current.path}
               </span>
+              {body && <CopyButton text={body} label="copy" />}
               {isMarkdown && (
                 <button
                   className="mono dim"
-                  style={{ fontSize: 10.5, borderBottom: "1px dotted var(--bd3)" }}
+                  style={{
+                    fontSize: 10.5,
+                    marginLeft: "auto",
+                    borderBottom: "1px dotted var(--bd3)",
+                  }}
                   onClick={() => setRaw(!raw)}
                 >
-                  {raw ? "rendered" : "raw"}
+                  {raw ? "hide source" : "show source"}
                 </button>
               )}
-              {body && <CopyButton text={body} />}
             </div>
           )}
-          {isMarkdown && !raw ? (
-            <div
-              className="card-flat"
-              style={{ padding: "14px 16px", maxHeight: "70vh", overflowY: "auto" }}
-            >
-              <Markdown text={body} />
-            </div>
+          {isMarkdown ? (
+            <>
+              {/* `.card-flat` sets overflow:hidden, which would clip rather
+                  than scroll — so the scroller is its own inner element. */}
+              <div className="card-flat">
+                <div
+                  style={{
+                    padding: "14px 16px",
+                    maxHeight: "70vh",
+                    overflowY: "auto",
+                  }}
+                >
+                  <Markdown text={body} />
+                </div>
+              </div>
+              {/* Source is for copying, not for reading — disclosed, never
+                  the default, and it never replaces the rendered view. */}
+              {raw && (
+                <pre
+                  className="terminal"
+                  style={{
+                    marginTop: 10,
+                    padding: "12px 14px",
+                    maxHeight: "40vh",
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    overflowWrap: "anywhere",
+                  }}
+                >
+                  {body}
+                </pre>
+              )}
+            </>
           ) : (
             <pre
               className="terminal"

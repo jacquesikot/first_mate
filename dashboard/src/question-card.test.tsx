@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { QuestionCard } from "./components";
+import { CopyButton, QuestionCard } from "./components";
 import type { Question, SubQuestion } from "./api";
 
 const sub = (
@@ -147,5 +147,18 @@ describe("a plain question", () => {
     // key; the card must not crash on them.
     const { questions: _omitted, ...legacy } = plain;
     expect(() => html(legacy as Question)).not.toThrow();
+  });
+});
+
+describe("CopyButton", () => {
+  it("renders its label, not the whole payload", () => {
+    // A 14KB plan draft was passed with no label, so the entire document
+    // became the button's face and pushed the rendered markdown 3800px
+    // down the page (STATUS 2026-08-20).
+    const big = "## Implementation Plan\n" + "x".repeat(5000);
+    const withLabel = renderToStaticMarkup(<CopyButton text={big} label="copy" />);
+    expect(withLabel).toContain(">copy<");
+    expect(withLabel).not.toContain("Implementation Plan");
+    expect(withLabel.length).toBeLessThan(300);
   });
 });
