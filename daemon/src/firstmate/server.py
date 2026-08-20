@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cleanup, replan, scoping_api
+from . import cleanup, learning, replan, scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
@@ -329,6 +329,45 @@ def apply_structured_answer(store: Store, task: Task, q: Question,
     return None
 
 
+def suggest_promotion(store: Store, q: Question) -> dict | None:
+    """Record a one-time "promote to project memory?" suggestion when this
+    decision has now been made on more than one task (PRD §6.6).
+
+    Never writes memory itself. The operator answering the same question in
+    a second task is good evidence the answer was never task-specific, but
+    "good evidence" is not consent — memory is their data, and a system
+    that edits it unasked is one they stop trusting.
+    """
+    try:
+        promo = learning.recurring_answer(store, q)
+    except Exception:
+        return None
+    if promo is None:
+        return None
+    # Asked and settled once already — including dismissed. "Don't
+    # remember that" is a decision, and re-offering it is the exact
+    # nagging that fingerprinting exists to stop.
+    if store.suggestion_for_fingerprint(promo.fingerprint) is not None:
+        return None
+    task = store.load_task(q.task_id)
+    project = Path(task.repo).name if task else ""
+    sug = {
+        "id": new_id("sug"),
+        "status": "pending",
+        "project": project,
+        "fingerprint": promo.fingerprint,
+        "fact": promo.fact,
+        "question": promo.question,
+        "answer": promo.answer,
+        "task_ids": promo.task_ids,
+        "occurrences": promo.occurrences,
+        "question_id": q.id,
+        "created_at": now_iso(),
+    }
+    store.save_suggestion(sug)
+    return sug
+
+
 async def run_replan(store: Store, manager: "TaskManager", task: Task,
                      q: Question, answer: str) -> dict:
     """Turn a free-text answer into a contract edit (PRD §6.8).
@@ -480,7 +519,12 @@ def create_app(store: Store | None = None, autostart: bool = True,
                           "running": manager.running(task.id),
                           "context": context_reading(task, manager.config)})
         questions = [q.to_dict() for q in store.list_questions(status="open")]
+        # Pending memory suggestions ride the status poll rather than a
+        # second one of their own. They are deliberately NOT part of the
+        # "needs you" count — nothing is blocked on them.
+        suggestions = len(store.list_suggestions(status="pending"))
         return {"tasks": tasks, "questions": questions,
+                "memory_suggestions": suggestions,
                 "config": {"max_workers": manager.config["max_workers"],
                            "wall_tokens": manager.config["wall_tokens"]}}
 
@@ -1064,7 +1108,77 @@ def create_app(store: Store | None = None, autostart: bool = True,
 
     @app.get("/memory")
     async def list_memory():
-        return {"projects": store.list_memory()}
+        """Memory files plus whether each is large enough to be worth
+        consolidating — the dashboard offers compaction, never runs it."""
+        threshold = int(manager.config.get("memory_compact_bytes") or 0)
+        projects = store.list_memory()
+        for p in projects:
+            p["compact_due"] = bool(threshold and p["bytes"] >= threshold)
+        return {"projects": projects, "compact_bytes": threshold}
+
+    # NB: declared before /memory/{project} — a literal path must win the
+    # route match, or "suggestions" reads as a project name.
+
+    @app.get("/memory-suggestions")
+    async def list_suggestions(status: str | None = "pending",
+                               project: str | None = None):
+        """Pending "promote to memory?" suggestions (PRD §6.8, Memory view).
+        Pass status= (blank for all) to see resolved ones too."""
+        return {"suggestions": store.list_suggestions(
+            status=status or None, project=project)}
+
+    @app.post("/memory-suggestions/{sid}/accept")
+    async def accept_suggestion(sid: str, request: Request):
+        """Write the suggested fact to project memory. The operator may
+        edit the wording first — it is their file, and the phrasing was
+        assembled mechanically from their answer."""
+        sug = store.load_suggestion(sid)
+        if sug is None:
+            raise HTTPException(404, f"unknown suggestion: {sid}")
+        if sug.get("status") != "pending":
+            raise HTTPException(409, {"error": f"already {sug.get('status')}",
+                                      "suggestion": sug})
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        fact = str((body or {}).get("fact") or sug["fact"]).strip()
+        project = str((body or {}).get("project") or sug.get("project") or "")
+        if not fact:
+            raise HTTPException(400, "fact is required")
+        if not project or "/" in project or project.startswith("."):
+            raise HTTPException(400, "a valid project is required")
+        store.remember(project, fact)
+        sug = store.resolve_suggestion(sid, "accepted",
+                                       str((body or {}).get("by") or "operator"))
+        # Logged against the task that raised it, so the task's own event
+        # log tells the whole story of what its answer went on to do.
+        for tid in reversed(sug.get("task_ids") or []):
+            if store.load_task(tid) is not None:
+                evt = store.append_event(
+                    tid, "memory_promoted",
+                    data={"suggestion_id": sid, "fact": fact,
+                          "project": project})
+                await manager.broadcast(evt)
+                break
+        return {"suggestion": sug, "project": project,
+                "text": store.memory_for_project(project)}
+
+    @app.post("/memory-suggestions/{sid}/dismiss")
+    async def dismiss_suggestion(sid: str):
+        """"No, don't remember that" is itself a decision — the same
+        situation is never suggested again."""
+        sug = store.load_suggestion(sid)
+        if sug is None:
+            raise HTTPException(404, f"unknown suggestion: {sid}")
+        if sug.get("status") != "pending":
+            raise HTTPException(409, {"error": f"already {sug.get('status')}",
+                                      "suggestion": sug})
+        return {"suggestion": store.resolve_suggestion(sid, "dismissed")}
+
+    @app.get("/memory-archive")
+    async def list_archive(project: str | None = None):
+        return {"archive": store.list_memory_archive(project)}
 
     @app.get("/memory/{project}")
     async def get_memory(project: str):
@@ -1085,6 +1199,37 @@ def create_app(store: Store | None = None, autostart: bool = True,
             raise HTTPException(400, "fact is required")
         store.remember(project, fact)
         return {"project": project, "text": store.memory_for_project(project)}
+
+    @app.post("/memory/{project}/compact")
+    async def compact_memory(project: str):
+        """Consolidate a memory file that has grown past being useful.
+
+        Never automatic and never destructive-in-place: the current text is
+        archived verbatim first, and a rewrite that lost most of the
+        entries is rejected outright (see learning.parse_compaction) — a
+        large memory file is a mild problem, a silently gutted one is the
+        operator's notes gone.
+        """
+        if "/" in project or project.startswith("."):
+            raise HTTPException(400, "bad project name")
+        text = store.memory_for_project(project)
+        if text is None:
+            raise HTTPException(404, f"no memory for project: {project}")
+        model = (manager.config.get("learning_model")
+                 or manager.config.get("supervisor_model")
+                 or manager.config.get("handoff_model")
+                 or manager.config["worker_model"])
+        result = await asyncio.to_thread(
+            learning.request_compaction, store.home, text, model)
+        if not result.ok:
+            raise HTTPException(422, {"error": "compaction did not apply",
+                                      "errors": result.errors})
+        archived = store.archive_memory(project)
+        store.write_memory(project, result.text)
+        return {"project": project, "text": store.memory_for_project(project),
+                "before_bytes": result.before_bytes,
+                "after_bytes": result.after_bytes,
+                "archived": str(archived) if archived else None}
 
     @app.put("/memory/{project}")
     async def replace_memory(project: str, request: Request):
@@ -1177,6 +1322,18 @@ def create_app(store: Store | None = None, autostart: bool = True,
         task = store.load_task(q.task_id)
         resumed = False
         replan: dict | None = None
+        # The same decision on a second task is a standing project fact,
+        # not a coincidence — offer to make it permanent (PRD §6.6). Runs
+        # for every answered question, not just blocking ones, and never
+        # writes memory on its own.
+        suggestion = suggest_promotion(store, q)
+        if suggestion is not None:
+            evt = store.append_event(
+                q.task_id, "memory_suggested", step_id=q.step_id,
+                data={"suggestion_id": suggestion["id"],
+                      "fact": suggestion["fact"],
+                      "occurrences": suggestion["occurrences"]})
+            await manager.broadcast(evt)
         if task is not None and task.status == "blocked":
             if (q.type in ("decision", "approval") and answer.lower() == "abandon"
                     and "abandon" in [o.lower() for o in q.options]):
@@ -1204,6 +1361,8 @@ def create_app(store: Store | None = None, autostart: bool = True,
         out = {"question": q.to_dict(), "resumed": resumed}
         if replan is not None:
             out["replan"] = replan
+        if suggestion is not None:
+            out["suggestion"] = suggestion
         return out
 
     # ------------------------------------------- worker/hook callbacks

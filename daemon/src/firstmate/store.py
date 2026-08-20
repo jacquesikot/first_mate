@@ -12,6 +12,8 @@ Layout:
     daemon.json                     written by `fm serve` (url, pid)
     firstmate.db                    index; safe to delete
     memory/<project>.md             durable per-project memory
+    memory/archive/<project>-<ts>.md  pre-compaction snapshots (never pruned)
+    memory/suggestions/<sid>.json   pending "promote to memory?" suggestions
     tasks/<task-id>/
       task.json                     lifecycle + per-step runtime state
       contract.json / contract.md
@@ -53,6 +55,15 @@ DEFAULT_CONFIG = {
     # automatic; these only touch regenerable or archivable things.
     "clean_deps_after_days": 3,
     "archive_tasks_after_days": 14,
+    # Memory loop (PRD §6.6). Extraction only fires on a step that
+    # struggled, so this is a cap on the *interesting* steps, not on all
+    # of them. null model → the supervisor/handoff model, else the worker's.
+    "learn_from_steps": True,
+    "learning_model": None,
+    "max_learnings_per_task": 5,
+    # Compaction is offered (never automatic) once a memory file passes
+    # this size — a file big enough to crowd the context it feeds.
+    "memory_compact_bytes": 8000,
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,
@@ -93,6 +104,8 @@ class Store:
         self.home = Path(home) if home else fm_home()
         (self.home / "tasks").mkdir(parents=True, exist_ok=True)
         (self.home / "memory").mkdir(parents=True, exist_ok=True)
+        (self.home / "memory" / "archive").mkdir(parents=True, exist_ok=True)
+        (self.home / "memory" / "suggestions").mkdir(parents=True, exist_ok=True)
         # check_same_thread=False: FastAPI's test client and to_thread
         # helpers may touch the index from another thread; writes still
         # funnel through the single daemon process.
@@ -436,6 +449,100 @@ class Store:
         with path.open("a") as f:
             f.write(f"- {now_iso()} — {fact}\n")
         return path
+
+    def archive_memory(self, project: str) -> Path | None:
+        """Snapshot the current memory file before anything rewrites it.
+
+        Compaction is a lossy LLM pass over the operator's own notes, so
+        the pre-compaction text is kept verbatim and forever — an archive
+        that gets pruned is not an archive.
+        """
+        path = self.home / "memory" / f"{project}.md"
+        if not path.exists():
+            return None
+        from .learning import archive_name
+
+        dest = self.home / "memory" / "archive" / archive_name(project)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(path.read_text())
+        return dest
+
+    def list_memory_archive(self, project: str | None = None) -> list[dict]:
+        d = self.home / "memory" / "archive"
+        out = []
+        for p in sorted(d.glob("*.md"), reverse=True):
+            # <project>-<stamp>.md — the stamp never contains a hyphen.
+            proj = p.stem.rsplit("-", 1)[0]
+            if project and proj != project:
+                continue
+            out.append({"project": proj, "file": p.name,
+                        "bytes": p.stat().st_size,
+                        "path": str(p)})
+        return out
+
+    # ------------------------------------------- promotion suggestions
+
+    def save_suggestion(self, sug: dict) -> Path:
+        """A pending "promote to project memory?" suggestion (PRD §6.6).
+
+        A separate file per suggestion, keyed by the question fingerprint
+        so the same recurring decision can only ever be suggested once —
+        including across daemon restarts, which is the whole point of it
+        being on disk rather than in memory.
+        """
+        d = self.home / "memory" / "suggestions"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{sug['id']}.json"
+        path.write_text(json.dumps(sug, indent=2) + "\n")
+        return path
+
+    def load_suggestion(self, sid: str) -> dict | None:
+        path = self.home / "memory" / "suggestions" / f"{sid}.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            return None
+
+    def list_suggestions(self, status: str | None = None,
+                         project: str | None = None) -> list[dict]:
+        d = self.home / "memory" / "suggestions"
+        out = []
+        for p in sorted(d.glob("*.json")):
+            try:
+                sug = json.loads(p.read_text())
+            except json.JSONDecodeError:
+                continue
+            if status and sug.get("status") != status:
+                continue
+            if project and sug.get("project") != project:
+                continue
+            out.append(sug)
+        out.sort(key=lambda s: s.get("created_at") or "")
+        return out
+
+    def suggestion_for_fingerprint(self, fingerprint: str) -> dict | None:
+        """Any suggestion — pending, accepted or dismissed — for this
+        situation. A dismissed suggestion must never come back: the
+        operator saying "no, don't remember that" is itself a decision."""
+        if not fingerprint:
+            return None
+        for sug in self.list_suggestions():
+            if sug.get("fingerprint") == fingerprint:
+                return sug
+        return None
+
+    def resolve_suggestion(self, sid: str, status: str,
+                           by: str = "operator") -> dict | None:
+        sug = self.load_suggestion(sid)
+        if sug is None:
+            return None
+        sug["status"] = status
+        sug["resolved_at"] = now_iso()
+        sug["resolved_by"] = by
+        self.save_suggestion(sug)
+        return sug
 
     # -------------------------------------------------------------- index
 

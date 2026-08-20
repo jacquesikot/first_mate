@@ -16,6 +16,11 @@ earlier step (bounded, and stopped when a round makes no progress) →
 otherwise escalates to a `decision` question with diff and failing check
 attached. Never a third autonomous attempt at the same thing.
 
+Learning (PRD §6.6): a step that succeeded only after struggling gets one
+extraction call asking what project-specific fact would have saved the
+trouble. Gated on the struggle, bounded per task, and it writes to project
+memory — the one place worker output outlives the task that produced it.
+
 Waiting (decision log 2026-08-20): a step may declare a `when` gate — a
 shell probe the daemon runs on an interval *before* spawning a worker. The
 task sits in `waiting`, holding no worker slot and burning no tokens, so
@@ -35,7 +40,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import (
-    cleanup, guard, relay, spawner, supervisor, validation, workerfiles,
+    cleanup, guard, learning, relay, spawner, supervisor, validation,
+    workerfiles,
 )
 from .exec import context, gitops, tmux
 from .models import (
@@ -126,6 +132,9 @@ class TaskRunner:
         # Set when a loop edge fires: context for the step we rewind to.
         self._loop_note: str | None = None
         self._loop_note_for: str | None = None
+        # Learnings written this run — bounded so one pathological task
+        # can't flood project memory (config: max_learnings_per_task).
+        self._learnings = 0
 
     # Called by the daemon (fm ask / pause / abandon) while we run.
     def deliver(self, item: dict) -> None:
@@ -331,6 +340,10 @@ class TaskRunner:
                 self.store.save_task(task)
                 await self.emit("step_done", step_id=spec.id,
                                 generations=st.generation)
+                # A step that only succeeded the hard way may have taught
+                # this project something durable (PRD §6.6). Read-only,
+                # never blocks the step, and most calls record nothing.
+                await self._learn_from_step(task, contract, spec, st, worktree)
                 # Diff-shaped tripwires (PRD §6.4) at the step boundary —
                 # the step's work stands, but the task pauses for approval
                 # before any further steps build on an oversized diff.
@@ -820,6 +833,67 @@ class TaskRunner:
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
+
+    async def _learn_from_step(self, task: Task, contract: Contract,
+                              spec: StepSpec, st: StepState,
+                              worktree: Path) -> None:
+        """Extract a durable project fact from a step that struggled.
+
+        Three things keep this from becoming noise. It only runs when the
+        step actually hit a wall — a first-try success taught nothing, and
+        paying a call per step to be told "write tests" is how a memory
+        file becomes unreadable. It is bounded per task. And the prompt's
+        job is to REFUSE: `fact: null` is the expected answer, so a run
+        that records nothing is the normal case, not a failure.
+
+        Never fatal: the step is already done and validated. A learning
+        that can't be extracted is a missed opportunity, not an error.
+        """
+        if not self.config.get("learn_from_steps", True):
+            return
+        if not learning.step_struggled(st):
+            return
+        if self._learnings >= int(self.config.get("max_learnings_per_task", 5)):
+            return
+        project = Path(task.repo).name
+        model = (self.config.get("learning_model")
+                 or self.config.get("supervisor_model")
+                 or self.config.get("handoff_model")
+                 or self.config["worker_model"])
+        struggle = learning.struggle_summary(st)
+        try:
+            result = await asyncio.to_thread(
+                learning.request_extraction, worktree, spec.id, contract.goal,
+                spec.prompt, struggle, st.last_failure or "", model)
+        except Exception as e:  # a learning must never fail a done step
+            await self.emit("learning_skipped", step_id=spec.id,
+                            reason=f"extraction raised: {e}")
+            return
+        if not result.ok:
+            await self.emit("learning_skipped", step_id=spec.id,
+                            reason="; ".join(result.errors))
+            return
+        if not result.fact:
+            # The common, healthy outcome. Recorded as an event so the
+            # decision is auditable — "we looked and there was nothing"
+            # is different from "we never looked".
+            await self.emit("learning_none", step_id=spec.id,
+                            reason=result.reason)
+            return
+        # Don't write the same fact twice: memory is append-only, so a
+        # convergence loop hitting the same wall four times would
+        # otherwise leave four identical lines.
+        existing = self.store.memory_for_project(project) or ""
+        if learning.already_known(existing, result.fact):
+            await self.emit("learning_duplicate", step_id=spec.id,
+                            fact=result.fact)
+            return
+        self.store.remember(project, f"{result.fact} "
+                                     f"(learned in {task.id}/{spec.id})")
+        self._learnings += 1
+        await self.emit("learning_recorded", step_id=spec.id,
+                        project=project, fact=result.fact,
+                        struggle=struggle, reason=result.reason)
 
     async def _offer_cleanup(self, task: Task) -> None:
         """Offer to reclaim the task's worktree, without blocking on it.
