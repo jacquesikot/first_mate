@@ -238,6 +238,21 @@ STRUCTURED_ANSWERS = {
 }
 
 
+def _failed_criterion_ids(q: Question) -> list[str]:
+    """Criterion ids this escalation was raised about."""
+    ev = q.evidence or {}
+    out = []
+    named = ev.get("criterion_id")
+    if isinstance(named, str) and named.strip():
+        out.append(named.strip())
+    for f in ev.get("failing") or []:
+        if isinstance(f, dict) and str(f.get("id") or "").strip():
+            cid = str(f["id"]).strip()
+            if cid not in out:
+                out.append(cid)
+    return out
+
+
 def needs_replan(q: Question, answer: str) -> bool:
     """True when the answer is the operator saying something in their own
     words that no mechanical rule can express.
@@ -266,11 +281,23 @@ def apply_structured_answer(store: Store, task: Task, q: Question,
         return None
     if norm == "accept and continue":
         # The operator judges the remaining failure acceptable: the step
-        # stands as done and the task moves on. The criterion stays in the
-        # contract — the amendment log records that it was waived here.
+        # stands as done and the task moves on. The criterion is not
+        # deleted — the contract still records what "done" was meant to
+        # mean — but it IS marked waived, so the task-boundary check does
+        # not re-run it and ask the same question a second time.
         step.status = "done"
         step.last_failure = None
         store.save_task(task)
+        failed = _failed_criterion_ids(q)
+        if failed:
+            contract = store.load_contract(task.id)
+            if contract is not None:
+                for cid in failed:
+                    if cid not in contract.waived_criteria:
+                        contract.waived_criteria.append(cid)
+                store.save_contract(task.id, contract)
+                return (f"accepted step; waived "
+                        f"{', '.join(failed)} for the rest of this task")
         return "accepted step despite failing criteria"
     if norm in ("loop again", "keep waiting"):
         # Give the loop / the wait another full allowance.

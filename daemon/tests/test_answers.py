@@ -352,3 +352,60 @@ def test_replan_failure_is_recorded_and_does_not_corrupt_the_contract(
                 "tripwires", "tripwire_allow"):
         assert after[key] == before[key], key
     assert (client.store.task_dir(tid) / "replan-failed.md").exists()
+
+
+def test_accepting_a_failing_criterion_waives_it_for_the_whole_task(client):
+    """"accept and continue" has to actually settle it. Marking the step
+    done while leaving the criterion live means the task-boundary check
+    re-runs it and asks the identical question again."""
+    tid = make_task(client, criteria=[{"id": "c1", "command": "exit 1"}])
+    q = Question(id="q-acc2", task_id=tid, step_id="s1", type="decision",
+                 urgency="blocking",
+                 question="Step 's1' cannot pass its criteria — c1 asserts "
+                          "something that can never become true",
+                 options=["accept and continue", "abandon"],
+                 evidence={"unsatisfiable": True, "criterion_id": "c1",
+                           "failing": [{"id": "c1", "command": "exit 1"}]})
+    client.store.save_question(q)
+    task = client.store.load_task(tid)
+    task.status = "blocked"
+    client.store.save_task(task)
+
+    client.post("/questions/q-acc2/answer",
+                json={"answer": "accept and continue"})
+
+    contract = client.store.load_contract(tid)
+    assert contract.waived_criteria == ["c1"]
+    # Not deleted: the contract still records what "done" was meant to be,
+    # and the waiver is visible to anyone reading it.
+    assert contract.criterion("c1").command == "exit 1"
+    assert "WAIVED by the operator" in contract.render_markdown()
+    assert client.store.load_task(tid).step_state("s1").status == "done"
+
+
+def test_a_waived_criterion_is_not_re_run_at_the_boundaries(tmp_path):
+    """The waiver has to reach the validation calls, not just the file."""
+    import asyncio
+
+    from firstmate.models import Contract, Criterion, StepSpec, StepState, Task
+    from firstmate.orchestrator import TaskRunner
+
+    import sys
+    sys.path.insert(0, "tests")
+    from test_orchestrator import build, fake_generations
+
+    steps = [StepSpec(id="s", prompt="p", criteria=["good", "bad"])]
+    crits = [Criterion(id="good", command="true"),
+             Criterion(id="bad", command="exit 1")]
+    store, runner, repo = build(tmp_path, steps, crits)
+    fake_generations(runner, ["exited"] * 4)
+
+    contract = store.load_contract("t1")
+    contract.waived_criteria = ["bad"]
+    store.save_contract("t1", contract)
+
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
+
+    task = store.load_task("t1")
+    assert task.status == "done", "the waived check must not block the task"
+    assert not store.list_questions(task_id="t1", status="open")

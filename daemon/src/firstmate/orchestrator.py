@@ -210,8 +210,13 @@ class TaskRunner:
         # Task boundary: every contract criterion must hold (PRD §6.7).
         task.current_step = None
         await self._set_status(task, "validating")
+        # A criterion the operator waived mid-run is not re-run here —
+        # otherwise "accept and continue" marks the step done and then the
+        # boundary asks the identical question all over again.
+        boundary = [c for c in contract.criteria
+                    if c.id not in (contract.waived_criteria or [])]
         results = await asyncio.to_thread(
-            validation.run_criteria, worktree, contract.criteria
+            validation.run_criteria, worktree, boundary
         )
         path = self.store.save_validation(task.id, None, 0, results)
         failing = [r for r in results if not r.passed]
@@ -305,7 +310,8 @@ class TaskRunner:
                 continue
 
             # outcome == "exited" → validate this step's criteria
-            crits = contract.resolve_criteria(spec.criteria)
+            crits = [c for c in contract.resolve_criteria(spec.criteria)
+                     if c.id not in (contract.waived_criteria or [])]
             results = await asyncio.to_thread(validation.run_criteria, worktree, crits)
             path = self.store.save_validation(task.id, spec.id, st.attempt, results)
             failing = [r for r in results if not r.passed]

@@ -167,6 +167,10 @@ class Contract:
     tripwire_allow: list[str] = field(default_factory=list)
     context: str = ""
     amendments: list[dict] = field(default_factory=list)
+    # Criteria the operator explicitly waived mid-run ("accept and
+    # continue"). Kept as data rather than deleted, so the contract still
+    # records what "done" was meant to mean and the waiver is auditable.
+    waived_criteria: list[str] = field(default_factory=list)
 
     def criterion(self, cid: str) -> Criterion:
         for c in self.criteria:
@@ -225,6 +229,11 @@ class Contract:
             lines.append(f"   {s.prompt}")
         lines += ["", "## Completion criteria (machine-checkable)", ""]
         for c in self.criteria:
+            if c.id in self.waived_criteria:
+                lines.append(
+                    f"- `{c.id}`: WAIVED by the operator mid-run "
+                    f"(was: `{c.command}`)")
+                continue
             lines.append(f"- `{c.id}`: `{c.command}` (cwd: {c.cwd}, timeout: {c.timeout}s)")
         if self.amendments:
             lines += ["", "## Amendments (answered questions — binding)", ""]
