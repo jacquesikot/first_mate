@@ -60,6 +60,8 @@ def api(method: str, path: str, body: dict | None = None,
 
 
 def cmd_serve(args) -> int:
+    import socket
+
     import uvicorn
 
     from .server import create_app
@@ -69,6 +71,32 @@ def cmd_serve(args) -> int:
     config = store.config()
     port = args.port or int(config["port"])
     url = f"http://127.0.0.1:{port}"
+
+    # Claim the port BEFORE announcing anything or rewriting daemon.json.
+    # Otherwise a second `fm serve` prints a success line, overwrites the
+    # pointer with a pid that dies on the bind error, and leaves the
+    # operator believing they restarted the daemon when the old one is
+    # still running the old code (observed live 2026-08-20).
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError:
+        existing = ""
+        pointer = fm_home() / "daemon.json"
+        if pointer.exists():
+            try:
+                existing = f" (daemon.json says pid {json.loads(pointer.read_text()).get('pid')})"
+            except (OSError, json.JSONDecodeError):
+                pass
+        print(f"fm: port {port} is already in use{existing} — another daemon is "
+              f"probably already running.\n"
+              f"    Check with: lsof -ti :{port}\n"
+              f"    Then either stop it, or run `fm serve --port <other>`.",
+              file=sys.stderr)
+        return 1
+    finally:
+        probe.close()
+
     (fm_home() / "daemon.json").write_text(
         json.dumps({"url": url, "pid": os.getpid()}, indent=2) + "\n"
     )

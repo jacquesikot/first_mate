@@ -365,3 +365,220 @@ def test_short_ceiling_is_supervised_before_it_expires():
     st.gate = GateState(first_probe_at="2020-01-01T00:00:00+00:00", probes=99)
     assert runner._should_supervise(st, Gate(command="x", interval=10,
                                              ceiling=240))
+
+
+# ------------------------------------------ unsatisfiable criteria
+
+
+def creply(**kw):
+    body = {"verdict": "unsatisfiable", "criterion_id": "cubic_clean",
+            "findings": "PR 493 is MERGED; no review row can be created for a "
+                        "closed PR, so this check can never pass",
+            "reasoning": "r", "suggestion": "assert the check run instead",
+            "confidence": "high"}
+    body.update(kw)
+    return json.dumps(body)
+
+
+def test_unsatisfiable_needs_evidence():
+    """A claim that a check can NEVER pass has to be evidenced — otherwise
+    it is just a way to give up."""
+    d = supervisor.parse_criterion_reply(creply(findings=""))
+    assert d.errors and not d.blocks_loop
+
+
+def test_low_confidence_unsatisfiable_does_not_stop_the_loop():
+    """Looping is cheap; stopping wrongly is not. A hedged 'impossible' is
+    not a good enough reason to stop trying."""
+    d = supervisor.parse_criterion_reply(creply(confidence="low"))
+    assert not d.errors
+    assert not d.blocks_loop
+    assert supervisor.parse_criterion_reply(creply(confidence="medium")).blocks_loop
+
+
+def test_needs_more_work_keeps_the_loop_going():
+    d = supervisor.parse_criterion_reply(creply(verdict="needs_more_work"))
+    assert not d.errors and not d.blocks_loop
+
+
+def test_criterion_reply_rejects_junk_and_unknown_verdicts():
+    assert supervisor.parse_criterion_reply("nope").errors
+    assert supervisor.parse_criterion_reply(creply(verdict="broken")).errors
+
+
+def test_criterion_prompt_forbids_editing_the_criterion():
+    """The supervisor may say a check is unsatisfiable and say what it
+    thinks it meant — it may not change it. That stays the operator's."""
+    c = contract_with_gate()
+
+    class R:
+        id, command, exit_status = "cubic_clean", "gh api ... | grep -q x", 1
+        error, stdout, stderr = None, "", ""
+
+    p = supervisor.build_criterion_prompt(c, "verify", [R()], iteration=1,
+                                          max_iterations=5)
+    assert "cubic_clean" in p and "gh api" in p
+    assert "round 2 of 5" in p
+    assert "only they may alter it" in p
+    assert "NOT applying that change" in p
+    # And it must be steered against crying wolf.
+    assert "impossible" in p and "NOT merely" in p
+
+
+def test_there_is_no_verdict_that_edits_a_criterion():
+    """Structural guarantee: the vocabulary itself offers no way to say
+    'here is a better criterion, apply it'."""
+    assert supervisor.CRITERION_VERDICTS == {
+        "unsatisfiable", "needs_more_work", "cannot_tell"}
+    assert not hasattr(supervisor.CriterionDiagnosis(), "new_command")
+    # apply_gate_repair is the only mutator, and it only writes `when`.
+    assert not hasattr(supervisor, "apply_criterion_repair")
+
+
+def test_unsatisfiable_criterion_escalates_instead_of_looping(
+        tmp_path, monkeypatch):
+    """The real case: the PR merged, so the criterion's premise is dead.
+    Looping five times would just delay telling the operator."""
+    from firstmate.models import Criterion as C
+
+    steps = [
+        StepSpec(id="fix", prompt="p", criteria=[]),
+        StepSpec(id="verify", prompt="p", criteria=["cubic_clean"],
+                 on_failure=LoopBack(goto="fix", max_iterations=5)),
+    ]
+    store, runner, repo = build(
+        tmp_path, steps, [C(id="cubic_clean", command="echo same; exit 1")],
+        config={"supervise_criteria": True})
+    calls = fake_generations(runner, ["exited"] * 40)
+
+    seen = {"n": 0}
+
+    def fake(worktree, contract, step_id, failures, model, iteration=0,
+             max_iterations=0, timeout=600):
+        seen["n"] += 1
+        return supervisor.parse_criterion_reply(creply())
+
+    monkeypatch.setattr(supervisor, "investigate_criteria", fake)
+
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=25))
+
+    task = store.load_task("t1")
+    assert task.status == "blocked"
+    st = task.step_state("verify")
+    # One loop round happened (giving the work a fair chance), then it
+    # stopped rather than burning all five.
+    assert st.iteration == 1, st.iteration
+    assert seen["n"] == 1
+
+    q = store.list_questions(task_id="t1", status="open")[0]
+    assert "cannot pass its criteria" in q.question
+    assert "cubic_clean" in q.question
+    assert "MERGED" in q.question
+    # The operator gets the supervisor's reasoning and its suggestion,
+    # and is NOT offered a pointless "loop again".
+    assert q.evidence["unsatisfiable"] is True
+    assert q.evidence["criterion_id"] == "cubic_clean"
+    assert "check run" in q.evidence["supervisor_suggestion"]
+    assert "loop again" not in q.options
+    assert "accept and continue" in q.options
+
+    # The criterion itself is untouched — only the operator may change it.
+    assert store.load_contract("t1").criterion("cubic_clean").command \
+        == "echo same; exit 1"
+    events = [e["event"] for e in store.events_tail("t1", 300)]
+    assert "criteria_supervising" in events and "criteria_diagnosed" in events
+    assert (store.step_dir("t1", "verify")
+            / "criteria-diagnosis-1.md").exists()
+
+
+def test_needs_more_work_lets_the_loop_converge(tmp_path, monkeypatch):
+    """A sound-but-failing check must not be mistaken for an impossible
+    one — the loop has to still be able to do its job."""
+    from firstmate.models import Criterion as C
+
+    marker = tmp_path / "rounds"
+    marker.write_text("0")
+    steps = [
+        StepSpec(id="fix", prompt="p", criteria=[]),
+        StepSpec(id="verify", prompt="p", criteria=["ok"],
+                 on_failure=LoopBack(goto="fix", max_iterations=5)),
+    ]
+    store, runner, repo = build(
+        tmp_path, steps, [C(id="ok", command=f'test "$(cat {marker})" -ge 2')],
+        config={"supervise_criteria": True})
+    calls = fake_generations(runner, ["exited"] * 40)
+    inner = runner._run_generation
+
+    async def counting(task, contract, spec, st, handoff):
+        if spec.id == "fix":
+            marker.write_text(str(int(marker.read_text()) + 1))
+        return await inner(task, contract, spec, st, handoff)
+
+    runner._run_generation = counting
+    monkeypatch.setattr(
+        supervisor, "investigate_criteria",
+        lambda *a, **k: supervisor.parse_criterion_reply(
+            creply(verdict="needs_more_work")))
+
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=25))
+
+    assert store.load_task("t1").status == "done"
+    assert not store.list_questions(task_id="t1", status="open")
+
+
+def test_criteria_supervision_is_skipped_without_a_loop_edge(
+        tmp_path, monkeypatch):
+    """No loop edge means the next stop is the operator either way, so the
+    LLM call would buy nothing."""
+    from firstmate.models import Criterion as C
+
+    steps = [StepSpec(id="s", prompt="p", criteria=["c"])]
+    store, runner, repo = build(tmp_path, steps, [C(id="c", command="exit 1")],
+                                config={"supervise_criteria": True})
+    fake_generations(runner, ["exited"] * 10)
+    seen = {"n": 0}
+
+    def fake(*a, **k):
+        seen["n"] += 1
+        return supervisor.parse_criterion_reply(creply())
+
+    monkeypatch.setattr(supervisor, "investigate_criteria", fake)
+
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
+
+    assert seen["n"] == 0
+    assert store.load_task("t1").status == "blocked"
+
+
+def test_criteria_supervision_waits_for_a_non_progressing_round(
+        tmp_path, monkeypatch):
+    """While each round changes the failure, the work is evidently moving —
+    don't spend an LLM call second-guessing it."""
+    from firstmate.models import Criterion as C
+
+    n = tmp_path / "n"
+    n.write_text("0")
+    steps = [
+        StepSpec(id="fix", prompt="p", criteria=[]),
+        StepSpec(id="verify", prompt="p", criteria=["c"],
+                 on_failure=LoopBack(goto="fix", max_iterations=3)),
+    ]
+    # Different output each evaluation → never the same signature twice.
+    store, runner, repo = build(
+        tmp_path, steps,
+        [C(id="c", command=f'v=$(cat {n}); echo $((v+1)) > {n}; echo "r $v"; exit 1')],
+        config={"supervise_criteria": True})
+    fake_generations(runner, ["exited"] * 40)
+    seen = {"n": 0}
+
+    def fake(*a, **k):
+        seen["n"] += 1
+        return supervisor.parse_criterion_reply(creply())
+
+    monkeypatch.setattr(supervisor, "investigate_criteria", fake)
+
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=25))
+
+    assert seen["n"] == 0, "a progressing loop is left alone"
+    assert store.load_task("t1").status == "blocked"
+    assert store.load_task("t1").step_state("verify").iteration == 3

@@ -416,6 +416,9 @@ class StepState:
     iteration: int = 0
     last_failure_signature: str = ""
     gate: GateState | None = None
+    # How many times the supervisor has judged whether this step's criteria
+    # are satisfiable at all (bounded — it is an LLM call per look).
+    criteria_diagnoses: int = 0
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)

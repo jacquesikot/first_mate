@@ -150,7 +150,8 @@ def test_criterion_failure_loops_back_instead_of_asking(tmp_path):
     # genuine loop-back round rather than just the retry ladder.
     crit = Criterion(id="clean",
                      command=f'test "$(cat {counter})" -ge 2')
-    store, runner, wt = build(tmp_path, steps, [crit])
+    store, runner, wt = build(tmp_path, steps, [crit],
+                              config={"supervise_criteria": False})
     calls = fake_generations(runner, ["exited"] * 12)
     inner = runner._run_generation
 
@@ -183,7 +184,10 @@ def test_loop_stops_when_it_makes_no_progress(tmp_path):
                  on_failure=LoopBack(goto="fix", max_iterations=20)),
     ]
     store, runner, wt = build(
-        tmp_path, steps, [Criterion(id="clean", command="echo same; exit 1")])
+        tmp_path, steps, [Criterion(id="clean", command="echo same; exit 1")],
+        # Isolate the control flow: the criterion-judging LLM call is
+        # covered in test_supervisor.py.
+        config={"supervise_criteria": False})
     fake_generations(runner, ["exited"] * 40)
 
     asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
@@ -210,7 +214,8 @@ def test_loop_respects_max_iterations(tmp_path):
     crit = Criterion(
         id="clean",
         command=f'n=$(cat {counter}); echo $((n+1)) > {counter}; echo "round $n"; exit 1')
-    store, runner, wt = build(tmp_path, steps, [crit])
+    store, runner, wt = build(tmp_path, steps, [crit],
+                              config={"supervise_criteria": False})
     fake_generations(runner, ["exited"] * 40)
 
     asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
@@ -240,7 +245,8 @@ def test_loop_rewind_carries_context_and_resets_downstream_steps(tmp_path):
     crit = Criterion(
         id="clean",
         command=f'echo "finding $(cat {marker})"; test "$(cat {marker})" -ge 2')
-    store, runner, wt = build(tmp_path, steps, [crit])
+    store, runner, wt = build(tmp_path, steps, [crit],
+                              config={"supervise_criteria": False})
     calls = fake_generations(runner, ["exited"] * 20)
 
     # Count fix runs the way a real worker would: by touching the repo.

@@ -336,6 +336,35 @@ class TaskRunner:
                 f"{r.id}: " + (r.error or f"exit {r.exit_status}") for r in failing
             )
             if st.attempt >= 2:
+                # Before looping (or asking), find out whether more work
+                # could fix this at all. A criterion that asserts something
+                # unreachable will fail identically every round, so looping
+                # would just burn the allowance and delay the operator
+                # hearing about it.
+                cdiag = await self._diagnose_criteria(
+                    task, contract, spec, st, failing, worktree)
+                if cdiag is not None and cdiag.blocks_loop:
+                    await self._escalate(
+                        task, spec.id,
+                        f"Step '{spec.id}' cannot pass its criteria — "
+                        f"{cdiag.criterion_id or 'a check'} asserts something "
+                        f"that can never become true, so looping would not "
+                        f"help. {cdiag.findings[:600]}",
+                        failing, worktree,
+                        options=["accept and continue", "abandon"],
+                        extra_evidence={
+                            "unsatisfiable": True,
+                            "criterion_id": cdiag.criterion_id,
+                            "supervisor_findings": cdiag.findings,
+                            "supervisor_reasoning": cdiag.reasoning,
+                            "supervisor_suggestion": cdiag.suggestion,
+                            "confidence": cdiag.confidence,
+                        },
+                    )
+                    st.status = "blocked"
+                    self.store.save_task(task)
+                    await self._set_status(task, "blocked")
+                    return None
                 # A declared loop edge is the contract saying "this failure
                 # is an expected outcome — go round again" (e.g. a reviewer
                 # found new issues). Take it before bothering the operator.
@@ -783,6 +812,99 @@ class TaskRunner:
             started = started.replace(tzinfo=timezone.utc)
         return max(0.0, (datetime.now(timezone.utc) - started).total_seconds())
 
+    # ------------------------------------------------ criterion judgement
+
+    async def _diagnose_criteria(self, task: Task, contract: Contract,
+                                 spec: StepSpec, st: StepState,
+                                 failing: list[validation.CriterionResult],
+                                 worktree: Path):
+        """Ask the supervisor whether more work could ever satisfy these
+        checks. Returns a CriterionDiagnosis, or None when not consulted.
+
+        Deliberately advisory-only: the supervisor may report that a check
+        is unsatisfiable and say what it thinks the check meant, but it
+        cannot edit one. A criterion is the operator's statement of what
+        they wanted, so acting on the diagnosis is their call — made
+        through the escalation, where free text already routes to the
+        re-planner.
+        """
+        if not self.config.get("supervise_criteria", True):
+            return None
+        if st.criteria_diagnoses >= int(
+                self.config.get("max_criteria_supervisions", 2)):
+            return None
+        # Only where the answer can actually change what happens next:
+        # a step with a loop edge is about to spend rounds on this, so it
+        # is worth an LLM call to check the rounds aren't futile. Without
+        # a loop edge the next stop is the operator either way, and the
+        # escalation already carries the failing evidence.
+        if spec.on_failure is None:
+            return None
+        # Give the loop a real chance first. A criterion is only worth
+        # judging once a round has gone by and changed nothing: that is the
+        # signal that re-doing the work cannot reach the check. Before
+        # that, looping is cheap and might simply work — and _loop_back's
+        # own no-progress brake would stop us here anyway, so this is the
+        # same moment, reached with an explanation instead of a shrug.
+        if st.iteration < 1:
+            return None
+        if self._failure_signature(failing) != st.last_failure_signature:
+            return None  # still moving; let it keep going
+        model = (self.config.get("supervisor_model")
+                 or self.config.get("handoff_model")
+                 or self.config["worker_model"])
+        edge = spec.on_failure
+        st.criteria_diagnoses += 1
+        self.store.save_task(task)
+        await self.emit("criteria_supervising", step_id=spec.id,
+                        attempt=st.attempt, iteration=st.iteration,
+                        failing=[r.id for r in failing])
+        diag = await asyncio.to_thread(
+            supervisor.investigate_criteria, worktree, contract, spec.id,
+            failing, model, st.iteration,
+            edge.max_iterations if edge else 0)
+        self.store.save_step_artifact(
+            task.id, spec.id,
+            f"criteria-diagnosis-{st.criteria_diagnoses}.md",
+            self._render_criterion_diagnosis(failing, diag))
+        await self.emit("criteria_diagnosed", step_id=spec.id,
+                        verdict=diag.verdict,
+                        criterion_id=diag.criterion_id or None,
+                        confidence=diag.confidence,
+                        blocks_loop=diag.blocks_loop,
+                        errors=diag.errors or None,
+                        findings=diag.findings[:500])
+        return diag
+
+    @staticmethod
+    def _render_criterion_diagnosis(failing, diag) -> str:
+        return "\n".join([
+            "# Criteria diagnosis",
+            "",
+            f"**Verdict:** {diag.verdict} (confidence: {diag.confidence})",
+            f"**Criterion judged:** {diag.criterion_id or '(unspecified)'}",
+            "",
+            "## Failing checks",
+            "",
+            *(f"- `{r.id}`: exit {r.exit_status}\n  ```sh\n  {r.command}\n  ```"
+              for r in failing),
+            "",
+            "## Findings",
+            "",
+            diag.findings or "(none)",
+            "",
+            "## Reasoning",
+            "",
+            diag.reasoning or "(none)",
+            "",
+            "## Suggested correction (for the operator to decide on)",
+            "",
+            diag.suggestion or "(none)",
+            "",
+            *(["## Errors", "", *(f"- {e}" for e in diag.errors), ""]
+              if diag.errors else []),
+        ]) + "\n"
+
     # ------------------------------------------------------- loop edges
 
     async def _loop_back(self, task: Task, contract: Contract, spec: StepSpec,
@@ -993,7 +1115,8 @@ class TaskRunner:
     async def _escalate(self, task: Task, step_id: str | None, summary: str,
                         failing: list[validation.CriterionResult],
                         worktree: Path,
-                        options: list[str] | None = None) -> None:
+                        options: list[str] | None = None,
+                        extra_evidence: dict | None = None) -> None:
         """The failure ladder's top rung: a decision question with the diff
         and the failing checks attached (acceptance criterion 9)."""
         try:
@@ -1018,6 +1141,7 @@ class TaskRunner:
                      "stderr_tail": (r.stderr or "")[-2000:]}
                     for r in failing
                 ],
+                **(extra_evidence or {}),
             },
         )
         q.fingerprint = question_fingerprint(q.type, q.evidence, q.question)

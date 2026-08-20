@@ -45,6 +45,10 @@ DEFAULT_CONFIG = {
     "supervise_gates": True,
     "supervise_after_s": 300,
     "max_gate_supervisions": 3,
+    # A step that has failed its criteria twice is judged once: can more
+    # work fix this, or is the check asserting something unreachable?
+    "supervise_criteria": True,
+    "max_criteria_supervisions": 2,
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,

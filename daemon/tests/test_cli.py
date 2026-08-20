@@ -75,3 +75,35 @@ def test_contract_check_command(tmp_path, capsys):
     bad.write_text(json.dumps({"goal": "", "repo": "", "steps": []}))
     assert main(["contract", "check", str(bad)]) == 1
     assert "goal is required" in capsys.readouterr().out
+
+
+def test_serve_refuses_a_port_already_in_use(tmp_path, monkeypatch, capsys):
+    """A second `fm serve` must fail loudly. Printing a success line and
+    overwriting daemon.json with a pid that immediately dies leaves the
+    operator believing they restarted when the old code is still serving
+    (observed live 2026-08-20)."""
+    import json as _json
+    import socket
+
+    from firstmate import cli
+
+    monkeypatch.setenv("FM_HOME", str(tmp_path))
+    held = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    held.bind(("127.0.0.1", 0))
+    port = held.getsockname()[1]
+    held.listen(1)
+    pointer = tmp_path / "daemon.json"
+    pointer.write_text(_json.dumps({"url": f"http://127.0.0.1:{port}",
+                                    "pid": 4242}) + "\n")
+    try:
+        rc = cli.main(["serve", "--port", str(port)])
+    finally:
+        held.close()
+
+    assert rc == 1, "must exit non-zero, not pretend to have started"
+    err = capsys.readouterr().err
+    assert "already in use" in err
+    assert "4242" in err, "names the pid from daemon.json so it can be found"
+    assert f"lsof -ti :{port}" in err
+    # The existing pointer must not be clobbered by the failed attempt.
+    assert _json.loads(pointer.read_text())["pid"] == 4242

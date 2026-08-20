@@ -49,6 +49,12 @@ INVESTIGATE_TOOLS = [
 
 VERDICTS = {"gate_wrong", "still_waiting", "cannot_tell"}
 
+# Criterion verdicts. Note what is deliberately absent: there is no
+# "criterion_wrong, here is a better one". The supervisor may say a check
+# cannot be satisfied and explain why; changing the operator's definition
+# of done stays the operator's decision, answered through the escalation.
+CRITERION_VERDICTS = {"unsatisfiable", "needs_more_work", "cannot_tell"}
+
 SUPERVISE_PROMPT = """\
 You are First Mate's supervisor for one running task. A step is parked on \
 a gate — a shell probe First Mate polls before running the step — and the \
@@ -304,5 +310,193 @@ def apply_gate_repair(contract: Contract, step_id: str,
     return step.when
 
 
-__all__ = ["Diagnosis", "investigate", "parse_reply", "build_prompt",
-           "apply_gate_repair", "INVESTIGATE_TOOLS"]
+CRITERION_PROMPT = """\
+You are First Mate's supervisor for one running task. A step has failed \
+its completion criteria twice. Before First Mate spends several more \
+rounds re-doing the work, your job is to establish whether more work can \
+actually fix this — or whether the CHECK is asserting something that can \
+never become true, in which case looping is pointless and the operator \
+should be told now.
+
+## The step and what failed
+
+Step id: {step_id}
+Step instructions:
+{step_prompt}
+
+Failing checks (the operator's definition of "done" for this step):
+
+{failures}
+
+{loop_note}
+## The task
+
+Goal: {goal}
+Repository: {repo}
+Working directory: your cwd IS the task's git worktree.
+
+## What to do
+
+1. INVESTIGATE with your read-only tools (`gh pr view/checks/diff/api`, \
+`gh run list/view`, `git log/rev-parse/status/diff/show`, file reads). Run \
+the failing check's own sub-commands and look at what they really return. \
+Establish whether the thing the check asserts is *reachable at all* from \
+here.
+2. Decide:
+   - **unsatisfiable** — no amount of further work by this task can make \
+this check pass. Typical causes: it asserts a record that only gets \
+created in some circumstances (a review is only filed when there is \
+something to say); it pins an identifier that has moved on; the thing it \
+queries is now closed/merged/deleted so the state it wants can never be \
+produced; it queries a field the provider never populates; it requires a \
+permission or resource this environment does not have. Be strict: \
+"unsatisfiable" means impossible, NOT merely "hard" or "not done yet".
+   - **needs_more_work** — the check is sound and failing honestly. The \
+work genuinely is not finished, so looping back is the right move. This is \
+the default; prefer it whenever the check could plausibly pass after \
+another attempt.
+   - **cannot_tell** — you could not establish the facts.
+3. If unsatisfiable, explain it so the operator can decide what to do, and \
+say what you believe the check was *trying* to assert and how that could \
+be expressed instead. You are NOT applying that change — a completion \
+criterion is the operator's statement of what they wanted, and only they \
+may alter it. You are giving them what they need to choose.
+
+Return ONLY a JSON object, no prose:
+
+{{
+  "verdict": "unsatisfiable" | "needs_more_work" | "cannot_tell",
+  "criterion_id": "the id of the check you judged, from the list above",
+  "findings": "what you actually checked and found — cite concrete values \
+(SHAs, states, counts, ids) you observed",
+  "reasoning": "why more work can or cannot fix this",
+  "suggestion": "if unsatisfiable: what the check appears to be trying to \
+assert, and a command that would express it correctly — as a RECOMMENDATION \
+for the operator, not something you are applying",
+  "confidence": "high" | "medium" | "low"
+}}
+"""
+
+
+@dataclass
+class CriterionDiagnosis:
+    verdict: str = "cannot_tell"
+    criterion_id: str = ""
+    findings: str = ""
+    reasoning: str = ""
+    suggestion: str = ""
+    confidence: str = "low"
+    errors: list[str] = field(default_factory=list)
+    raw: str = ""
+
+    @property
+    def blocks_loop(self) -> bool:
+        """True when looping would be futile, so the task should escalate
+        now instead of burning its remaining rounds."""
+        return (not self.errors
+                and self.verdict == "unsatisfiable"
+                # A low-confidence "impossible" is not a good enough reason
+                # to stop trying — looping is cheap compared to a wrong stop.
+                and self.confidence in ("high", "medium"))
+
+    def to_dict(self) -> dict:
+        return {
+            "verdict": self.verdict, "criterion_id": self.criterion_id,
+            "findings": self.findings, "reasoning": self.reasoning,
+            "suggestion": self.suggestion, "confidence": self.confidence,
+            "errors": self.errors,
+        }
+
+
+def build_criterion_prompt(contract: Contract, step_id: str,
+                           failures: list, iteration: int = 0,
+                           max_iterations: int = 0) -> str:
+    step = next((s for s in contract.steps if s.id == step_id), None)
+    rendered = []
+    for r in failures:
+        rendered.append(
+            f"- id: {r.id}\n"
+            f"  command: {r.command}\n"
+            f"  exit status: {r.exit_status}"
+            + (f"\n  error: {r.error}" if getattr(r, "error", None) else "")
+            + (f"\n  stdout: {(r.stdout or '').strip()[-800:]}" if r.stdout else "")
+            + (f"\n  stderr: {(r.stderr or '').strip()[-800:]}" if r.stderr else "")
+        )
+    loop_note = ""
+    if max_iterations:
+        loop_note = (
+            f"If more work could fix this, First Mate would loop back and "
+            f"retry (round {iteration + 1} of {max_iterations}). That is what "
+            f"you are deciding for or against.\n\n")
+    return CRITERION_PROMPT.format(
+        step_id=step_id,
+        step_prompt=(step.prompt.strip()[:2500] if step else "(step not found)"),
+        failures="\n".join(rendered) or "(none)",
+        loop_note=loop_note,
+        goal=contract.goal,
+        repo=contract.repo,
+    )
+
+
+def parse_criterion_reply(reply: str) -> CriterionDiagnosis:
+    data = _extract_json(reply)
+    if data is None:
+        return CriterionDiagnosis(
+            errors=["supervisor reply was not JSON"], raw=reply)
+    d = CriterionDiagnosis(
+        verdict=str(data.get("verdict") or "cannot_tell"),
+        criterion_id=str(data.get("criterion_id") or "").strip(),
+        findings=str(data.get("findings") or "").strip(),
+        reasoning=str(data.get("reasoning") or "").strip(),
+        suggestion=str(data.get("suggestion") or "").strip(),
+        confidence=str(data.get("confidence") or "low"),
+        raw=reply,
+    )
+    if d.verdict not in CRITERION_VERDICTS:
+        d.errors.append(f"unknown verdict: {d.verdict!r}")
+    if d.verdict == "unsatisfiable" and not d.findings:
+        d.errors.append(
+            "verdict 'unsatisfiable' with no findings — a claim that a check "
+            "can never pass has to be evidenced")
+    return d
+
+
+def investigate_criteria(worktree: Path, contract: Contract, step_id: str,
+                         failures: list, model: str, iteration: int = 0,
+                         max_iterations: int = 0,
+                         timeout: int = 600) -> CriterionDiagnosis:
+    """Judge whether a twice-failing step can ever pass its criteria."""
+    prompt = build_criterion_prompt(contract, step_id, failures,
+                                    iteration, max_iterations)
+    cmd = [
+        "claude", "-p", prompt,
+        "--output-format", "json",
+        "--model", model,
+        "--allowedTools", ",".join(INVESTIGATE_TOOLS),
+        "--permission-mode", "dontAsk",
+    ]
+    try:
+        proc = subprocess.run(cmd, cwd=worktree, capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return CriterionDiagnosis(
+            errors=[f"supervisor timed out after {timeout}s"])
+    except OSError as e:
+        return CriterionDiagnosis(errors=[f"supervisor could not run: {e}"])
+    if proc.returncode != 0:
+        return CriterionDiagnosis(
+            errors=[f"supervisor failed: exit {proc.returncode}: "
+                    f"{proc.stderr[-500:]}"])
+    try:
+        reply = json.loads(proc.stdout).get("result", "")
+    except json.JSONDecodeError:
+        return CriterionDiagnosis(
+            errors=["supervisor returned non-JSON envelope"],
+            raw=proc.stdout[-1000:])
+    return parse_criterion_reply(reply)
+
+
+__all__ = ["Diagnosis", "CriterionDiagnosis", "investigate",
+           "investigate_criteria", "parse_reply", "parse_criterion_reply",
+           "build_prompt", "build_criterion_prompt", "apply_gate_repair",
+           "INVESTIGATE_TOOLS"]
