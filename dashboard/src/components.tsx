@@ -170,10 +170,19 @@ export function CopyButton({ text, label }: { text: string; label?: string }) {
 
 // ------------------------------------------------------------- questions
 
+// Rendered by <Diagnosis> instead of dumped as generic evidence.
+const DIAGNOSIS_KEYS = new Set([
+  "supervisor_findings",
+  "supervisor_reasoning",
+  "supervisor_suggestion",
+]);
+
+
 function evidenceEntries(evidence: Record<string, unknown>): [string, string][] {
   const out: [string, string][] = [];
   for (const [k, v] of Object.entries(evidence ?? {})) {
     if (v == null) continue;
+    if (DIAGNOSIS_KEYS.has(k)) continue;
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
       const s = String(v);
       if (s.length <= 120 && !s.includes("\n")) out.push([k, s]);
@@ -189,9 +198,75 @@ function evidenceEntries(evidence: Record<string, unknown>): [string, string][] 
   return out;
 }
 
+
+/** What First Mate worked out before asking. When a check can never pass,
+ *  this is the whole point of the card: the operator needs the findings and
+ *  the suggested correction, not just "it failed twice". */
+function Diagnosis({ evidence }: { evidence: Record<string, unknown> }) {
+  const findings = evidence?.supervisor_findings as string | undefined;
+  const reasoning = evidence?.supervisor_reasoning as string | undefined;
+  const suggestion = evidence?.supervisor_suggestion as string | undefined;
+  if (!findings && !reasoning && !suggestion) return null;
+  const unsat = evidence?.unsatisfiable === true;
+  const cid = evidence?.criterion_id as string | undefined;
+  return (
+    <div
+      style={{
+        border: "1px solid var(--bd2)",
+        borderLeft: "2px solid var(--acbd)",
+        borderRadius: 8,
+        background: "rgba(242,168,59,.04)",
+        padding: "11px 13px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        minWidth: 0,
+      }}
+    >
+      <div
+        className="mono"
+        style={{
+          fontSize: 10,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--ac)",
+        }}
+      >
+        {unsat
+          ? `${cid ? cid + " " : ""}can never pass — checked before asking`
+          : "what I checked before asking"}
+      </div>
+      {findings && (
+        <div style={{ fontSize: 12.5, color: "var(--tx2)", maxWidth: "80ch" }}>
+          <Markdown text={findings} />
+        </div>
+      )}
+      {reasoning && (
+        <div style={{ fontSize: 12.5, color: "var(--tx3)", maxWidth: "80ch" }}>
+          <Markdown text={reasoning} />
+        </div>
+      )}
+      {suggestion && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <span
+            className="mono"
+            style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--tx3)" }}
+          >
+            suggested — your call, not applied
+          </span>
+          <div style={{ fontSize: 12.5, color: "var(--tx2)", maxWidth: "80ch" }}>
+            <Markdown text={suggestion} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function evidenceLong(evidence: Record<string, unknown>): [string, string][] {
   const out: [string, string][] = [];
   for (const [k, v] of Object.entries(evidence ?? {})) {
+    if (DIAGNOSIS_KEYS.has(k)) continue;
     if (typeof v === "string" && (v.includes("\n") || v.length > 120)) out.push([k, v]);
   }
   const failing = evidence?.failing;
@@ -308,6 +383,9 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
             text={q.question}
             className="question-body"
           />
+          <div style={{ marginTop: 11 }}>
+            <Diagnosis evidence={q.evidence} />
+          </div>
           {chips.length > 0 && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 11 }}>
               {chips.map(([k, v]) => (
