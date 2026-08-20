@@ -378,3 +378,110 @@ def test_keep_waiting_resumes_the_gate_rather_than_skipping_it(tmp_path):
     task = store.load_task("t1")
     assert task.status == "done"
     assert calls2 == ["wait"], "the step ran only after the gate reopened"
+
+
+# ------------------------------------- a worker that asked nobody anything
+
+
+def void_asks(runner, sequence):
+    """Stub the void-ask detector; each generation pops the next verdict."""
+    seq = list(sequence)
+
+    def _detect(task, spec, st):
+        return seq.pop(0) if seq else None
+
+    runner._worker_asked_the_void = _detect  # type: ignore[assignment]
+
+
+def test_void_ask_reprompts_without_burning_an_attempt(tmp_path):
+    """The real failure (STATUS 2026-08-20): a session ended its turn
+    asking the operator, so it did no work — validating it would judge it
+    on that and spend attempt 1. It must be re-prompted instead."""
+    steps = [StepSpec(id="plan", prompt="p", criteria=["c"])]
+    # The criterion only passes once the worker "writes" the receipt, which
+    # the void-asking generation never does.
+    receipt = tmp_path / "repo" / "receipt"
+    store, runner, repo = build(
+        tmp_path, steps, [Criterion(id="c", command=f"test -f {receipt}")])
+    calls = fake_generations(runner, ["exited", "exited"])
+    void_asks(runner, [" let me know", None])
+
+    # The second generation does the work.
+    original = runner._run_generation
+
+    async def _run(task, contract, spec, st, handoff):
+        out = await original(task, contract, spec, st, handoff)
+        if len(calls) == 2:
+            receipt.write_text("done")
+        return out
+
+    runner._run_generation = _run  # type: ignore[assignment]
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
+
+    task = store.load_task("t1")
+    st = task.step_state("plan")
+    assert task.status == "done"
+    assert len(calls) == 2, "the void-asking generation was re-prompted"
+    # The decisive assertion: no attempt was consumed by the void-ask, so
+    # the step still had its full retry budget for a real failure.
+    assert st.attempt == 1, f"void-ask must not burn an attempt (got {st.attempt})"
+    events = [e["event"] for e in store.events_tail("t1")]
+    assert "worker_asked_the_void" in events
+    # and it was not treated as a validation failure
+    assert "step_retry" not in events
+
+
+def test_void_ask_correction_reaches_the_next_session(tmp_path):
+    steps = [StepSpec(id="plan", prompt="p", criteria=["c"])]
+    store, runner, repo = build(tmp_path, steps,
+                                [Criterion(id="c", command="true")])
+    fake_generations(runner, ["exited", "exited"])
+    void_asks(runner, ["let me know", None])
+    notes = []
+    original = runner._run_generation
+
+    async def _run(task, contract, spec, st, handoff):
+        notes.append(runner._void_note)
+        return await original(task, contract, spec, st, handoff)
+
+    runner._run_generation = _run  # type: ignore[assignment]
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
+
+    assert notes[0] is None, "the first generation gets no correction"
+    assert notes[1] and "NOBODY READ IT" in notes[1]
+    assert "fm ask" in notes[1]
+
+
+def test_void_ask_is_corrected_only_once_per_step(tmp_path):
+    """If a worker keeps doing it, validation must get its say rather than
+    the step looping on re-prompts forever."""
+    steps = [StepSpec(id="plan", prompt="p", criteria=["c"])]
+    store, runner, repo = build(
+        tmp_path, steps, [Criterion(id="c", command="false")],
+        config={"max_generations": 6, "supervise_criteria": False})
+    calls = fake_generations(runner, ["exited"] * 6)
+    void_asks(runner, ["let me know"] * 6)
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=30))
+
+    events = [e["event"] for e in store.events_tail("t1")]
+    # corrected once...
+    assert events.count("worker_asked_the_void") == 1
+    # ...then the failing criterion was actually reported
+    assert "validation_run" in events
+    task = store.load_task("t1")
+    assert task.status in ("blocked", "failed")
+
+
+def test_a_clean_exit_still_validates(tmp_path):
+    """The detector must not interfere with an ordinary successful step."""
+    steps = [StepSpec(id="plan", prompt="p", criteria=["c"])]
+    store, runner, repo = build(tmp_path, steps,
+                                [Criterion(id="c", command="true")])
+    calls = fake_generations(runner, ["exited"])
+    void_asks(runner, [None])
+    asyncio.run(asyncio.wait_for(runner.run(), timeout=20))
+
+    assert store.load_task("t1").status == "done"
+    assert len(calls) == 1
+    events = [e["event"] for e in store.events_tail("t1")]
+    assert "worker_asked_the_void" not in events

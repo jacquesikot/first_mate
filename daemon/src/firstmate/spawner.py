@@ -14,6 +14,7 @@ stalling on a prompt (headless sessions must never wait on a human).
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import time
 import uuid
@@ -82,6 +83,63 @@ class WorkerResult:
     exit_status: int | None
     output: dict | None  # parsed --output-format json payload
     raw: str
+
+
+# A worker that ends its turn asking the operator something has stopped
+# for a reply that cannot arrive: there is no human in the session, so the
+# text goes nowhere and the step is judged on work it never did. Seen for
+# real on a reach-plan step, which played back its understanding and
+# closed with "Let me know if I've mischaracterized anything before I dig
+# in." — a clean exit as far as tmux is concerned, so the orchestrator
+# validated an empty worktree and burned an attempt (STATUS 2026-08-20).
+#
+# Deliberately narrow: it only fires on the LAST sentence of the reply, so
+# a report that merely discusses open questions is not caught.
+_VOID_ASK_PATTERNS = (
+    r"let me know\b",
+    r"lmk\b",
+    r"shall i\b",
+    r"should i\b",
+    r"(do|would) you (want|prefer|like)\b",
+    r"please (confirm|advise|clarify|let me)\b",
+    r"can you (confirm|clarify|tell me)\b",
+    r"before i (dig|proceed|start|begin|continue|go)\b",
+    r"sound(s)? (good|right|ok)\b",
+    r"thoughts\?",
+    r"is that (right|correct|what you)\b",
+    r"(waiting|wait) for (your|the operator)\b",
+    r"awaiting (your|confirmation|approval|a reply)\b",
+    r"which (one )?(would|do) you\b",
+    r"^(confirm|approve)\b",
+)
+
+
+def _final_sentences(text: str, count: int = 2) -> str:
+    """The tail of a reply, where a check-in would sit."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    # Trailing list items and bold headers are still "the end" for our
+    # purposes; split on sentence enders and newlines alike.
+    parts = [p for p in re.split(r"(?<=[.!?])\s+|\n+", body) if p.strip()]
+    return " ".join(parts[-count:]).strip()
+
+
+def asked_the_void(text: str) -> str | None:
+    """Return the matched phrase if this reply ends by asking a human who
+    isn't there, else None."""
+    tail = _final_sentences(text).lower()
+    if not tail:
+        return None
+    for pat in _VOID_ASK_PATTERNS:
+        m = re.search(pat, tail)
+        if m:
+            return m.group(0).strip()
+    # A bare trailing question aimed at the operator ("...which surface do
+    # you mean?") counts too, but only when it addresses them directly.
+    if tail.endswith("?") and re.search(r"\byou(r)?\b", tail):
+        return "a direct question to the operator"
+    return None
 
 
 def wait(

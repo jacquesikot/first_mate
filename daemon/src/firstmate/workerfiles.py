@@ -169,6 +169,7 @@ def build_inject(
     retry_note: str | None = None,
     loop_note: str | None = None,
     skill_state: str | None = None,
+    void_note: str | None = None,
 ) -> str:
     parts = [
         f"# First Mate — injected context (step '{step.id}', "
@@ -214,5 +215,12 @@ def build_inject(
         parts += [
             "", "## Previous attempt failed validation", "", retry_note.rstrip(), "",
             "Diagnose and fix the failure; do not repeat the same approach blindly.",
+        ]
+    # Loud, and last, because the previous session's mistake was to stop
+    # working — this one must not repeat it.
+    if void_note:
+        parts += [
+            "", "## READ THIS FIRST — your predecessor stopped for nothing",
+            "", void_note.rstrip(),
         ]
     return "\n".join(parts) + "\n"

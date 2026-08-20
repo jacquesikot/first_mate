@@ -160,3 +160,20 @@ def test_build_inject_renders_a_round_answer_per_question():
                         answered=[q])
     assert "Keep the tab?" in text and "A: keep both" in text
     assert "How to differentiate?" in text and "A: sub-tabs" in text
+
+
+def test_build_inject_void_note_is_loud_and_last():
+    """A worker that stopped to ask nobody must be told plainly, and the
+    correction must not be gated on the attempt counter."""
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=2, attempt=1,
+                        handoff="DONE: not much",
+                        void_note="NOBODY READ IT — use `fm ask` instead.")
+    assert "stopped for nothing" in text
+    assert "NOBODY READ IT" in text
+    # last section, so it is the freshest thing in context
+    assert text.rstrip().endswith("use `fm ask` instead.")
+
+
+def test_build_inject_omits_void_note_when_absent():
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=1, attempt=1)
+    assert "stopped for nothing" not in text

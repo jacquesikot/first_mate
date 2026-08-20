@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import sys
@@ -63,6 +64,17 @@ PARK_GRACE_SECONDS = 90.0  # worker is told to stop after fm ask; then SIGINT
 WORKER_PROMPT = """\
 You are a First Mate worker on task '{task_id}', step '{step_id}' \
 (generation {generation}, attempt {attempt}).
+
+THERE IS NO HUMAN IN THIS SESSION. Nobody is reading your replies as you \
+write them. Ending your turn with a question, a check-in, or "let me know \
+if…" reaches NOBODY — the session just ends, and the step is then judged \
+on what you actually did, which is nothing. If you need the operator, \
+`fm ask` is the ONLY channel (it parks the task and really does reach \
+them). Otherwise state your assumption and keep working. This matters \
+most if you are running a skill written for interactive use: its habit of \
+playing back its understanding and pausing for confirmation is wrong \
+here. Do the playback if the skill calls for it, then CONTINUE — do not \
+wait for a reply that cannot come.
 
 Your working context — the task contract, project memory, operator \
 answers, and a handoff brief from the previous session generation (if \
@@ -172,6 +184,11 @@ class TaskRunner:
         # Learnings written this run — bounded so one pathological task
         # can't flood project memory (config: max_learnings_per_task).
         self._learnings = 0
+        # A worker that ended its turn asking the operator: the correction
+        # for the next session, and the steps already corrected once (so a
+        # worker that keeps doing it still faces validation).
+        self._void_note: str | None = None
+        self._void_asks_seen: dict[str, bool] = {}
 
     # Called by the daemon (fm ask / pause / abandon) while we run.
     def deliver(self, item: dict) -> None:
@@ -358,6 +375,33 @@ class TaskRunner:
                     task, spec, st.generation, sess.session_id, worktree)
                 continue
 
+            # A worker that ended its turn asking the operator something
+            # has stopped for a reply that cannot arrive — there is no
+            # human in the session. Validating now would judge it on work
+            # it never did and burn an attempt, so re-prompt instead. Only
+            # ever counted against the generation budget, never the
+            # attempt budget (STATUS 2026-08-20).
+            if not self._void_asks_seen.get(spec.id):
+                void = self._worker_asked_the_void(task, spec, st)
+                if void is not None:
+                    # Once per step: if it does it twice, the re-prompt is
+                    # not working and validation should have its say.
+                    self._void_asks_seen[spec.id] = True
+                    await self.emit("worker_asked_the_void", step_id=spec.id,
+                                    generation=st.generation, matched=void)
+                    self._void_note = (
+                        f"Your previous session ended its turn by asking the "
+                        f"operator something (\"{void}\") and then stopped. "
+                        f"NOBODY READ IT — there is no human in these "
+                        f"sessions, so that reply went nowhere and the step "
+                        f"made no progress. Do not do this again. If you "
+                        f"genuinely need the operator, use `fm ask` (that "
+                        f"really does reach them, and parks the task). "
+                        f"Otherwise state your assumption plainly and carry "
+                        f"on to completion."
+                    )
+                    continue
+
             # outcome == "exited" → validate this step's criteria
             crits = [c for c in contract.resolve_criteria(spec.criteria)
                      if c.id not in (contract.waived_criteria or [])]
@@ -477,7 +521,11 @@ class TaskRunner:
             retry_note=self._retry_note if st.attempt > 1 else None,
             loop_note=loop_note,
             skill_state=skillstate.render(skillstate.load(worktree)),
+            # Not gated on attempt: a void-ask re-prompt deliberately does
+            # not consume an attempt, so this is its only way through.
+            void_note=self._void_note,
         )
+        self._void_note = None
         workerfiles.write_inject(worktree, inject)
         self.store.save_step_artifact(task.id, spec.id, f"inject-gen{gen}.md", inject)
         binary = fm_bin()
@@ -1283,6 +1331,28 @@ class TaskRunner:
                             question_id=q.id, question=q.question, type=q.type)
             return True
         return False
+
+    def _worker_asked_the_void(self, task: Task, spec: StepSpec,
+                               st: StepState) -> str | None:
+        """Did the session that just exited end by asking the operator?
+
+        Reads the reply out of the worker's own JSON output. Best effort:
+        if the file is missing or unparseable there is nothing to judge,
+        and a missed detection is only a wasted attempt — never a wrong
+        one.
+        """
+        sess = st.sessions[-1] if st.sessions else None
+        if sess is None:
+            return None
+        out = (Path(task.worktree) / ".fm"
+               / f"{task.id}-{spec.id}-g{sess.generation}.json")
+        try:
+            payload = json.loads(out.read_text())
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return spawner.asked_the_void(str(payload.get("result") or ""))
 
     async def _acquire_handoff(self, task: Task, spec: StepSpec, generation: int,
                                session_id: str, worktree: Path) -> str:
