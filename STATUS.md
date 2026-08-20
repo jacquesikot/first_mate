@@ -3,46 +3,45 @@
 > Living hand-off log. Every session reads this first and updates it before ending.
 > Protocol: see `CLAUDE.md`. Spec: see `PRD.md`.
 
-**Current phase:** Phase 3 closed. **Autonomy hardening + supervision + disk retention are done and live-verified (2026-08-20)** — First Mate now waits without burning context, iterates to convergence on its own, diagnoses and repairs its own broken checks, escalates immediately on a criterion that can never pass, stops re-asking settled questions, and reclaims disk on request. 192 daemon tests + 13 dashboard tests pass; all four smoke scenarios pass live with real workers. **Next: Phase 4 — Slack + memory loop**, in a fresh session.
+**Current phase:** Phase 4, first half. **The memory loop is done and live-verified (2026-08-20)** — First Mate now learns from steps that struggled, offers to promote answers that recur across tasks, and consolidates a memory file that has grown too large, all without ever writing the operator's memory unasked. 230 daemon tests + 13 dashboard tests pass; extraction, refusal and compaction verified against real `claude` calls. **Next: the Slack connector** — the other half of Phase 4, which needs a Slack app and tokens from Jacques before it can be live-verified.
 
 ---
 
 ## Next up (start here)
 
-**Phase 4 — Slack + memory loop (PRD §6.9, §6.6, §8).** This is the next
-build. Nothing from the 2026-08-20 work is outstanding; start here.
+**Phase 4, second half — the Slack connector (PRD §6.9).** The memory loop
+(the other half of Phase 4) is done; see Done below. Nothing from it is
+outstanding.
 
-1. **Slack connector, both directions (PRD §6.9).** Socket-mode app (no
-   public endpoint). Outbound: blocking questions with option buttons, task
-   completions/failures, escalations — throttled to one thread per task with
-   follow-ups threaded under it. Inbound: button clicks and threaded replies
-   resolve to the same path as `fm answer`; `remember: <fact>` appends to
-   project memory; a deliberately minimal command set (`status`,
-   `pause <task>`, `abandon <task>`). Answer consistency both ways within a
-   second, first-write-wins with a notice (the `/questions/{id}/answer`
-   endpoint already returns 409 with the existing answer — reuse it).
-   *Worth knowing before starting:* answers are no longer just recorded —
-   they route through `apply_structured_answer` → `needs_replan` →
-   `replan.py`, and a free-text Slack reply must reach the same path (see
-   the 2026-08-20 decision log). The supervisor also posts non-blocking
-   `fyi` questions now (gate repairs, cleanup offers); Slack should NOT page
-   for those.
-2. **Memory loop (PRD §6.6).** Only the plumbing exists today —
-   `Store.write_memory` / `memory_for_project`, injected into every worker
-   and scoping session. Still to build: (a) learning extraction after a
-   successful step (narrowly prompted — "what project-specific fact would
-   have saved time; no generic advice"), (b) promotion of recurring answers
-   to memory, (c) compaction with an archive when a memory file grows past
-   a threshold. **Question fingerprinting is already built** and is what (b)
-   needs: `question_fingerprint` keys on the situation, and per-task re-ask
-   suppression is live — Phase 4 adds only the *cross-task* promotion
-   suggestion on top.
-3. **Carried nice-to-haves** (none blocking Phase 4): a first live
-   interactive `fm task "<goal>"` run by Jacques (the terminal scoping chat
-   still hasn't had a human — the browser flow is well covered),
+1. **Blocked on Jacques for one thing:** a Slack app with socket mode
+   enabled, plus an app-level token (`xapp-…`) and a bot token
+   (`xoxb-…`). Socket mode is the PRD's choice specifically so no public
+   endpoint or tunnel is needed. Everything else can be built and tested
+   against a fake client first, but it cannot be *live-verified* without
+   these — and this repo's habit is that live verification is where the
+   real bugs turn up.
+2. **Outbound:** blocking questions with option buttons, task
+   completions/failures, escalations. Throttled to one thread per task,
+   follow-ups threaded under it.
+   *Worth knowing:* the supervisor now posts non-blocking `fyi` questions
+   (gate repairs, cleanup offers, and the memory loop's `learning_*`
+   events are events not questions) — Slack must NOT page for `fyi`.
+   The dashboard's own rule is the one to copy: open and not `fyi`.
+3. **Inbound:** button clicks and threaded replies must land on
+   `POST /questions/{id}/answer` — the same endpoint the CLI and dashboard
+   use, not a parallel path. That endpoint already does first-write-wins
+   (409 with the existing answer), routes free text through
+   `apply_structured_answer` → `needs_replan` → `replan.py`, and now also
+   raises cross-task promotion suggestions. Reuse it and all of that comes
+   for free; reimplement it and none of it does.
+   Also: `remember: <fact>` appends to project memory (`store.remember`,
+   or `POST /memory/{project}`), and a minimal command set — `status`,
+   `pause <task>`, `abandon <task>`.
+4. **Carried nice-to-haves** (none blocking): a first live interactive
+   `fm task "<goal>"` run by Jacques (the terminal scoping chat still
+   hasn't had a human — the browser flow is well covered),
    `block-with-timeout` ask mode (park-only today), question batching at
-   step boundaries (PRD §6.5), `--max-budget-usd` per worker, and a
-   "promote to memory?" surface in the Memory view (needs item 2).
+   step boundaries (PRD §6.5), and `--max-budget-usd` per worker.
 
 ## Engine shape after 2026-08-20 (read before touching the orchestrator)
 
@@ -75,17 +74,31 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
 - **`cleanup.py`** — never removes a worktree on its own; the clean-and-pushed
   bar plus `--force`. `fm clean` / `POST /tasks/{id}/cleanup` / the dashboard
   reclaim control are the entry points.
+- **`learning.py`** — at `step_done`, a step that *struggled* (attempt >1,
+  a handoff, a loop iteration, or a supervisor judgement) gets one
+  extraction call; most return nothing, which is the intended outcome and
+  is logged as `learning_none`. It writes project memory directly (that is
+  the system's own observation) but a *recurring operator answer* only ever
+  becomes a pending suggestion. Never fatal — a failed extraction cannot
+  fail a step that already validated.
 - **Guard:** `.fm/artifacts/` is always writable and git-invisible; lockfiles
   pass the hook while manifests still trip it (a step-boundary check catches
   real drift); a refusal answer rewrites the offending step prompt.
 
 ## In progress
 
-- **Nothing.** The 2026-08-20 work is complete, tested, live-verified, and
-  committed (10 commits, clean tree). The daemon is running the current code
-  with the dashboard built.
+- **Nothing.** The memory-loop work is complete, tested, and live-verified.
+  The daemon is running the current code with the dashboard built.
 
 ## Done
+
+- **2026-08-20** — **The memory loop (PRD §6.6) — Phase 4's first half.** Project memory existed as plumbing only: one markdown file per project, injected into every worker and scoping session, but written by nothing except the operator typing `fm remember`. So every task started as naive as the first — the same wrong test command, the same undocumented env var, rediscovered from scratch by a worker with no memory of the sessions that already hit it. New `daemon/src/firstmate/learning.py` (444 lines) adds the three writers the PRD names, and the design work was almost entirely about **what stops them writing**.
+  **(a) Learning extraction, gated on struggle.** After a step succeeds, `step_struggled` asks the step state whether it hit a wall — a retry, a generation handoff, a loop iteration, a supervisor judgement. A step that passed first try taught nothing, and a call per step to be told "write tests" is exactly how a memory file becomes unreadable. The prompt's whole job is then to *refuse*: `{"fact": null}` is documented as the expected answer, and `learning_none` is emitted so "we looked and there was nothing" stays distinguishable from "we never looked". Three more filters behind the prompt: a length band, an opener blacklist for generic advice, and `already_known` — a content-word overlap check, because memory is append-only and a convergence loop hitting one wall four times would otherwise write four near-identical lines. Bounded at `max_learnings_per_task` (5) so one pathological task can't turn memory into its own changelog. Never fatal: the step is already done and validated, so an extraction that raises is a missed opportunity, not an error.
+  **(b) Cross-task promotion.** Question fingerprinting already suppresses re-asks *within* a task. Across tasks the suppression deliberately does not apply — a new task is a new context — but the operator answering the same question in a *second* task is good evidence the answer was never task-specific. That earns a one-time suggestion, and only a suggestion: `suggest_promotion` writes a pending record and stops. Two traps closed by tests: an auto-answered echo (`answered_from` set) cannot count, or one answer manufactures its own corroboration and promotes itself; and many answers on one task still count once, because it is one operator making one decision. A dismissed suggestion is remembered as dismissed and never re-offered — "don't remember that" is itself a decision.
+  **(c) Compaction.** Offered (never automatic) past `memory_compact_bytes` (8000). It is the one path that can *reduce* the operator's notes, so it is the one that is suspicious of its own output: the pre-compaction text is archived verbatim to `memory/archive/` first, and `parse_compaction` rejects a reply that returned no entries, came back as prose, or dropped more than half the entries. A large memory file is a mild problem; a silently gutted one is the operator's notes gone.
+  **Surfaces:** `GET /memory-suggestions`, accept (with optional reworded `fact`) / dismiss, `POST /memory/{project}/compact`, `GET /memory-archive`, `compact_due` on `GET /memory`, and `memory_suggestions` on `/status` so the sidebar badge rides the existing poll instead of adding a second one. `fm memory {show,list,suggestions,promote,dismiss,compact}`, plus a pending-suggestion block on `fm status`. The dashboard Memory view grows the "promote to memory?" panel PRD §6.8 asks for and a Compact control that explains itself when due; the Memory nav badge counts pending suggestions but is deliberately kept **out** of the "needs you" counter, since nothing is blocked on them.
+  **Live-verified against real `claude`, not just stubs** — which is the part that mattered, since the whole feature is a judgement call. Extraction on a real struggle from this repo's own history produced exactly the intended fact ("cleanup.py's dep_bytes must recursively scan subdirectories, not just the worktree root"). More importantly it **refused twice** when handed struggles that taught nothing (an unused-import retry; a context wall on a big mechanical rename) — the failure mode that would have made this feature worse than useless. Compaction on a file seeded with duplicates and a contradiction merged the duplicates keeping the earliest date, resolved the contradiction to the current truth *with an explicit supersedes note*, grouped under headings, and lost nothing. The promotion path was driven end to end through the running daemon (no suggestion after one task, a suggestion after the second), then through the UI in headless Chromium — panel renders, dismiss clears it, badge drops inside 2.5s (under the 10s poll, so it is the explicit refresh doing it, not the timer). 230 daemon tests (+38, new `tests/test_learning.py`), 13 dashboard tests.
+  **Two bugs found by testing rather than reading:** `already_known` scored two statements of one fact at 0.692 against a 0.7 threshold — because trailing punctuation made `up.` and `up` distinct tokens, and "repo" carried no signal when every fact in the file is about the repo (fixed in the tokenizer, not by tuning the threshold); and `fm memory promote --fact` echoed the *suggested* wording back rather than the operator's override, misreporting their own edit to them.
 
 - **2026-08-20** — **Disk retention and `fm clean` (Jacques: "when a task closes, does it close the worktree and clean up temp files?").** It did not, and it was costing **1.4GB**: cleanup only ever ran when abandoning a still-`scoping` task with an empty worktree — nothing on `done`, `failed`, or a normal abandon, and nothing for `~/.firstmate/`. Four worktrees were on disk at 468MB each, two of them from tasks that had finished hours earlier, plus leftover `fm/*` branches and 6.4MB of my own smoke runs. Two of those worktrees also held real branches checked out (`feat/eng-646-meta-tab`, `jacquesikot/eng-652-…`), which blocks checking them out anywhere else.
   Jacques's shape, built as specified: **never automatic.** A finished task posts a **non-blocking** cleanup notice with the numbers; `fm clean` reports by default and takes `--all` / `--task` / `--dry-run` / `--deps-only` / `--force` / `--maintenance`; and the dashboard grows a per-task reclaim control that works on **any** finished task, not just the last one.
@@ -140,6 +153,11 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
 
 Decisions made outside the PRD, dated, with rationale. PRD §7 constraints are settled and not repeated here.
 
+- **2026-08-20** — **Memory is the operator's data; the system may only ever suggest.** Extraction writes facts the *system* observed about the project, which is First Mate's own output. But a recurring answer is the *operator's* statement, so promoting it is a rewrite of their notes — it goes to a pending suggestion, never a silent append, however strong the evidence. Corollary: accepting a suggestion lets them reword it first, and dismissing one is recorded so the same situation is never offered twice. "Good evidence" is not consent.
+- **2026-08-20** — **Learning extraction is gated on struggle, not on success.** The obvious design (extract after every successful step) is what fills a memory file with "write tests" and trains every future session to skim past it. A step that passed on its first attempt demonstrably taught nothing, so the gate reads the step state the engine already keeps (attempt / generation / iteration / criteria_diagnoses) and costs nothing when it says no. Jacques chose this over per-step and per-task alternatives.
+- **2026-08-20** — **The extraction prompt's job is to refuse.** `fact: null` is documented as the expected, correct, common answer, and a `learning_none` event records that the look happened. Verified live: handed two struggles that taught nothing, it returned null both times with a sound reason. A prompt that always finds something is worse than no prompt, because the noise is indistinguishable from the signal at read time — and there are three mechanical filters behind it (length band, generic-opener blacklist, `already_known` overlap) precisely because a prompt is not a guarantee.
+- **2026-08-20** — **Compaction distrusts its own output; the archive is not optional.** It is the only path that can shrink the operator's notes, so the pre-compaction text is written to `memory/archive/` verbatim before the rewrite lands, and a reply that returned no entries, came back as prose, or lost more than half the entries is rejected outright with the original left exactly as it was. The asymmetry: an uncompacted file is merely large, a truncated one has destroyed something that existed nowhere else. Same instinct as "indeterminate counts as unsafe" in the cleanup work.
+- **2026-08-20** — **Suggestions are findable, not demanding.** Pending suggestions get a Memory nav badge and a `fm status` block, but are deliberately excluded from the "needs you" attention counter and (per the Slack notes above) must not page. Nothing is blocked on them. The autonomy bar cuts both ways: interrupting for something that isn't a decision is the same failure as not interrupting for something that is.
 - **2026-08-20** — **Worktree removal is never automatic; dependency removal can be.** Deleting a worktree can destroy work that exists nowhere else, so it always takes an explicit ask (notice → `fm clean` / dashboard control) and always passes the clean-and-pushed bar first. Dependency and build directories are a different category: they are regenerable by definition, they are ~96% of a worktree's size, and losing them costs one install — so they may be dropped from a kept worktree and on an idle timer. The distinction to hold onto is *irreplaceable vs rebuildable*, not *big vs small*.
 - **2026-08-20** — **Indeterminate counts as unsafe.** If `git status` or the pushed-ness check cannot be established, that is a blocker, not a pass. The failure mode being avoided is a deletion justified by a check that silently returned nothing — which is exactly the `--not --remotes` bug this work found.
 - **2026-08-20** — **Task state is never deleted, only archived.** `~/.firstmate/tasks/**` is kilobytes and is the audit trail; every diagnosis in this session came from it. Archiving after 14 days keeps `tasks/` browsable without ever discarding evidence. Smoke runs are the one genuinely throwaway thing and are pruned by age.
@@ -213,6 +231,7 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 
 One dated entry per working session: who/what/outcome, newest first.
 
+- **2026-08-20** — Session 8 (Claude, on "continue building this app"): built **Phase 4's first half, the memory loop**, after Jacques chose it over the Slack half (Slack needs an app + tokens from him before it can be live-verified, and this repo's habit is that live verification is where the real bugs are) and chose struggle-gated extraction over per-step or per-task. New `learning.py` plus wiring: extraction after a step that actually hit a wall, cross-task promotion of recurring answers as *suggestions only*, and compaction that archives before it rewrites and rejects a rewrite that gutted the file. The design work was mostly about what stops each writer — the prompt is instructed to refuse, and there are three mechanical filters behind it because a prompt is not a guarantee. **Live-verified against real `claude`:** extraction produced the intended fact on a real struggle from this repo's history and, more importantly, **refused twice** on struggles that taught nothing; compaction merged duplicates keeping the earliest date and resolved a contradiction with an explicit supersedes note, losing nothing. Promotion driven end to end through the running daemon and then the UI in headless Chromium (panel renders, dismiss clears, badge drops inside 2.5s). 192 → 230 daemon tests, 13 dashboard tests. Two bugs found by testing: the near-duplicate check missed two statements of one fact at 0.692/0.70 because trailing punctuation split tokens and "repo" carried no signal (fixed the tokenizer, not the threshold), and `fm memory promote --fact` echoed the suggested wording instead of the operator's override. One non-bug worth recording: `fm serve` refused to start three times during verification with "port already in use" — that was the port check being *right* each time (my `pkill` raced the old daemon's shutdown), and its message named the pid and the diagnosing command every time. **Next: the Slack connector, blocked only on tokens.**
 - **2026-08-20** — **Session 7 closed.** Jacques's report of two stuck real tasks turned into a full autonomy pass, driven end to end by his framing ("First Mate should be smart enough to sit and wait… and know what to ask me vs what is a runtime decision"; "the overseeing engine should see that the issue is his check gate, and fix it in the plan/contract"). Ten commits, all live-verified against real tasks and real workers rather than only tests: gates (waiting costs no session, slot or tokens), bounded convergence loops, `replan.py` (a prose answer rewrites the contract under validation), the supervisor (diagnoses and repairs its own broken gates; escalates at once on a criterion that can never pass — diagnosis-only by construction), four guard fixes that stopped the repeat-prompt loop, and never-automatic disk retention with `fm clean`. Test counts: 107 → 192 daemon, 13 dashboard; smoke scenarios 2 → 4, all passing with real sonnet workers. **Six bugs found by running the thing rather than reading it**, two of them serious: `fm serve` printed success after a failed port bind (so a "restart" silently kept old code serving — which cost a round trip in this very session), and `unpushed_commits` ran `git log --not --remotes` with no positive revision, so a worktree holding unpushed commits read as *safe to delete*. Also: `isinstance(True, int)` corrupting the loop-rewind cursor, git ignoring a linked worktree's own `info/exclude`, a root-only dep scan reporting 0B for a worktree that was 96% `node_modules`, and an idle clock that could never tick because it took `max()` over `.git`. Two UI misses of my own (reclaim block on the wrong sidebar; `index.html` cached so a rebuilt dashboard looked unchanged) — both now fixed, and the second was a genuine server bug worth having. **Next session: Phase 4, nothing outstanding from this one.**
 - **2026-08-20** — Session 7 addendum 3 (Claude, on Jacques asking whether finished tasks clean up their worktrees): they did not — 1.4GB across four worktrees, 1.3GB of it `node_modules`, plus stale `fm/*` branches and smoke runs. Built retention to Jacques's spec: never-automatic removal, an end-of-task non-blocking notice, a per-task reclaim control for any finished task, and `fm clean` with report/`--all`/`--task`/`--dry-run`/`--deps-only`/`--force`/`--maintenance`. The clean-and-pushed safety bar refused three of four real worktrees, one holding 8 uncommitted source files. Testing caught a silent data-loss bug in my own code (`git log --not --remotes` without a positive revision reports nothing, so unpushed commits read as safe to delete) plus a root-only dep scan and an idle clock that could never tick. 192 daemon tests, 13 dashboard tests.
 - **2026-08-20** — Session 7 addendum 2 (Claude, on Jacques asking why a finished task wasn't under "done", then approving immediate escalation on unsatisfiable criteria): the task was `waiting`, not done — parked 56 minutes on the gate whose premise had died when PR #493 merged. Found and fixed a second, sneakier bug in the process: `fm serve` printed success after a failed port bind, so the "restart" that was supposed to load the supervisor silently left the old daemon serving. With a real restart the supervisor fired on the live task, rewrote the gate to assert terminal check state, and let `verify` run — which then failed its criterion, so I built criterion judgement too: after a non-progressing round, escalate immediately on a confident, evidenced `unsatisfiable` instead of burning the loop. Diagnosis-only by construction (no field and no function exists to apply a criterion change). Verified on the real criterion: `unsatisfiable`, high confidence, and it found what I had missed — cubic's check-run passed the new head, and the "new" inline comments are old threads re-anchored by GitHub, one annotated by cubic as addressed. 169 daemon tests, 13 dashboard tests. The ENG-652 task is paused pending Jacques's decision on its criterion.
