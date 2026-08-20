@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { MemoryProject, MemorySuggestion } from "../api";
+import type { MemoryProject, MemorySuggestion, RepoSuggestion } from "../api";
 import { api } from "../api";
 import { useApp, SectionHead } from "../components";
 import { ago } from "../format";
@@ -14,6 +14,16 @@ export function MemoryView() {
   const [fact, setFact] = useState("");
   const [busy, setBusy] = useState(false);
   const [suggestions, setSuggestions] = useState<MemorySuggestion[]>([]);
+  // Where a first-ever entry should go. Memory files are keyed on the
+  // repo's directory name, so the New-task picker's repo list is exactly
+  // the right set of candidates — no new endpoint needed.
+  const [repos, setRepos] = useState<RepoSuggestion[]>([]);
+  const [newProject, setNewProject] = useState("");
+  // Set when the operator wants to start a DIFFERENT project's memory than
+  // the one on screen. Without it, the picker only appears when no memory
+  // exists at all — so with exactly one project you could never create the
+  // second from here.
+  const [otherProject, setOtherProject] = useState(false);
 
   const loadList = () =>
     api
@@ -33,6 +43,10 @@ export function MemoryView() {
   useEffect(() => {
     loadList();
     loadSuggestions();
+    api
+      .repos()
+      .then((d) => setRepos(d.repos))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -44,14 +58,25 @@ export function MemoryView() {
       .catch(() => setText(""));
   }, [selected]);
 
+  // The project this entry lands in: the one being viewed, or — before any
+  // memory file exists — the one picked below. Without this the dashboard
+  // could edit memory it already had but never create the first entry,
+  // which sent you to the CLI for the one case you most want a UI for.
+  const target = otherProject || !selected ? newProject.trim() || null : selected;
+
   const append = async () => {
-    if (!fact.trim() || !selected || busy) return;
+    if (!fact.trim() || !target || busy) return;
     setBusy(true);
     try {
-      const d = await api.remember(selected, fact.trim());
+      const d = await api.remember(target, fact.trim());
       setText(d.text);
       setFact("");
       toast("Appended to project memory", "injected at the start of every session from now on");
+      // A first entry creates the file, so adopt it as the selection —
+      // otherwise the view still claims there is no memory.
+      setSelected(target);
+      setNewProject("");
+      setOtherProject(false);
       loadList();
     } catch (e) {
       toast("Append failed", String(e), "bad");
@@ -222,11 +247,11 @@ export function MemoryView() {
 
       {projects.length === 0 ? (
         <div className="empty">
-          No project memory yet. Teach the system with{" "}
+          No project memory yet. Add the first fact below — or from a repo with{" "}
           <span className="mono" style={{ fontSize: 12 }}>
             fm remember "&lt;fact&gt;"
-          </span>{" "}
-          from a repo, or append below once a task creates one.
+          </span>
+          .
         </div>
       ) : (
         <>
@@ -311,35 +336,124 @@ export function MemoryView() {
         </>
       )}
 
-      {selected && (
-        <div
-          style={{
-            display: "flex",
-            gap: 9,
-            alignItems: "center",
-            padding: 12,
-            borderRadius: "var(--rad)",
-            border: "1px solid var(--bd2)",
-            background: "var(--s2)",
-          }}
-        >
-          <span className="mono" style={{ fontSize: 11.5, color: "var(--tx4)", flex: "0 0 auto" }}>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 9,
+          padding: 12,
+          borderRadius: "var(--rad)",
+          border: "1px solid var(--bd2)",
+          background: "var(--s2)",
+        }}
+      >
+        {(otherProject || !selected) && (
+          <div style={{ display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap" }}>
+            <span
+              className="mono"
+              style={{ fontSize: 11.5, color: "var(--tx4)", flex: "0 0 auto" }}
+            >
+              project
+            </span>
+            <input
+              className="line"
+              style={{ maxWidth: 260 }}
+              placeholder="repo name…"
+              value={newProject}
+              onChange={(e) => setNewProject(e.target.value)}
+              list="fm-memory-projects"
+            />
+            <datalist id="fm-memory-projects">
+              {repos.map((r) => (
+                <option key={r.path} value={r.name} />
+              ))}
+            </datalist>
+            {/* Repos of existing tasks first — those are the ones whose
+                memory actually gets injected somewhere today. */}
+            {repos
+              .filter((r) => r.source === "recent")
+              .slice(0, 4)
+              .map((r) => (
+                <button
+                  key={r.path}
+                  className="mono"
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: 7,
+                    fontSize: 11,
+                    border: `1px solid ${
+                      newProject === r.name ? "var(--acbd)" : "var(--bd2)"
+                    }`,
+                    background: newProject === r.name ? "var(--acbg)" : "transparent",
+                    color: newProject === r.name ? "var(--ac)" : "var(--tx2)",
+                  }}
+                  onClick={() => setNewProject(r.name)}
+                >
+                  {r.name}
+                </button>
+              ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+          <span
+            className="mono"
+            style={{ fontSize: 11.5, color: "var(--tx4)", flex: "0 0 auto" }}
+          >
             fm remember
           </span>
           <input
             className="line"
-            placeholder="a project fact that would have saved a session time…"
+            placeholder={
+              target
+                ? "a project fact that would have saved a session time…"
+                : "pick a project first…"
+            }
             value={fact}
             onChange={(e) => setFact(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") append();
             }}
           />
-          <button className="btn accent" style={{ flex: "0 0 auto" }} onClick={append} disabled={busy}>
+          <button
+            className="btn accent"
+            style={{ flex: "0 0 auto" }}
+            onClick={append}
+            disabled={busy || !target || !fact.trim()}
+          >
             Append
           </button>
         </div>
-      )}
+        <div
+          style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+        >
+          {target && (
+            <span className="mono" style={{ fontSize: 11, color: "var(--tx4)" }}>
+              appends to ~/.firstmate/memory/{target}.md
+            </span>
+          )}
+          {selected && (
+            <button
+              className="mono"
+              style={{
+                marginLeft: "auto",
+                padding: 0,
+                border: "none",
+                background: "none",
+                fontSize: 11,
+                color: "var(--tx4)",
+                textDecoration: "underline",
+                cursor: "pointer",
+              }}
+              onClick={() => {
+                setOtherProject(!otherProject);
+                setNewProject("");
+              }}
+            >
+              {otherProject ? "use the project shown above" : "add to another project…"}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
