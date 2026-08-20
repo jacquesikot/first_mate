@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LivePayload, StatusInfo, WsMessage } from "./api";
 import { api, socket } from "./api";
-import { AppCtx } from "./components";
+import { AppCtx, ThemeToggle } from "./components";
 import { NowView } from "./views/Now";
 import { TasksView } from "./views/Tasks";
 import { TaskDetailView } from "./views/TaskDetail";
@@ -178,7 +178,7 @@ export default function App() {
                   justifyContent: "center",
                   fontSize: 12,
                   fontWeight: 500,
-                  color: "#180f02",
+                  color: "var(--acink)",
                 }}
               >
                 fm
@@ -356,7 +356,15 @@ export default function App() {
                 {headSub}
               </span>
             </div>
-            <div style={{ marginLeft: "auto", flex: "0 0 auto" }}>
+            <div
+              style={{
+                marginLeft: "auto",
+                flex: "0 0 auto",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
               <button
                 onClick={() => go("#/inbox")}
                 style={{
@@ -379,6 +387,7 @@ export default function App() {
                   {blocking ? `${blocking} need you` : "all clear"}
                 </span>
               </button>
+              <ThemeToggle />
             </div>
           </header>
 

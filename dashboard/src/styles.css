@@ -1,32 +1,167 @@
 /* First Mate dashboard — design tokens and primitives lifted from the
    agreed prototype (prototype/First Mate System Prototype.html):
-   near-monochrome dark, one amber accent reserved for attention, mono
-   for measured values / sans for human text, glyphs for status. */
+   near-monochrome, one amber accent reserved for attention, mono for
+   measured values / sans for human text, glyphs for status. */
+
+/* Two themes, one design. The dark palette is the agreed prototype look and
+   stays the default; the light palette re-points the same token names at the
+   same *roles* (surfaces step up away from the page, text steps down in
+   contrast), so no component needs to know which theme is live.
+
+   Themes resolve in three states: `data-theme="dark"|"light"` on <html> is an
+   explicit choice and wins; with the attribute absent we follow the OS. */
 
 :root {
+  /* page and stepped surfaces (s1 nearest the page, s4 furthest) */
   --bg: #08080a;
   --s1: #0f0f12;
   --s2: #15151a;
   --s3: #1c1c22;
   --s4: #232329;
+  /* the deep well behind terminal output, diffs and code */
+  --well: #07070a;
+  --well-bd: #14141a;
+  /* borders, faint to strong */
   --bd: #22222a;
   --bd2: #2e2e38;
   --bd3: #3d3d48;
+  /* text, strong to faint */
   --tx: #ececed;
   --tx2: #9b9ba5;
   --tx3: #63636d;
   --tx4: #4a4a53;
+  /* the one accent, reserved for attention */
   --ac: #f2a83b;
   --acd: #c9862a;
   --acbg: rgba(242, 168, 59, 0.09);
   --acbd: rgba(242, 168, 59, 0.32);
+  /* accent washes: a tint behind attention blocks, and the accent's own ink */
+  --acwash: rgba(242, 168, 59, 0.04);
+  --acink: #180f02;
+  --ac-hover: #ffc463;
+  /* verdicts */
   --ok: #6bb389;
   --okbg: rgba(107, 179, 137, 0.1);
   --bad: #cf6b60;
   --badbg: rgba(207, 107, 96, 0.1);
+  --okbd: rgba(107, 179, 137, 0.35);
+  --badbd: rgba(207, 107, 96, 0.35);
+  /* diff stripes: a wash plus readable ink on it */
+  --add-bg: rgba(107, 179, 137, 0.07);
+  --add-tx: #b8d9c4;
+  --del-bg: rgba(207, 107, 96, 0.07);
+  --del-tx: #d9b3ae;
+  /* inline `code` ink */
+  --code-tx: #e7c98d;
+  /* chrome: sidebar and header washes, and the inset a header sits on */
+  --sidebar-bg: linear-gradient(178deg, #101014 0%, #0b0b0e 100%);
+  --header-bg: linear-gradient(180deg, rgba(21, 21, 26, 0.9), rgba(11, 11, 14, 0.9));
+  --inset: rgba(0, 0, 0, 0.2);
+  /* modal scrim and the shadows that lift things off the page */
+  --scrim: rgba(4, 4, 6, 0.7);
+  --shadow-modal: 0 30px 80px rgba(0, 0, 0, 0.7);
+  --shadow-toast: 0 18px 44px rgba(0, 0, 0, 0.6);
+  /* an idle bar/pip track, and the fill when it is not live */
+  --track: linear-gradient(90deg, #2a2a33, #33333d);
+  --sbar: #2a2a32;
+  --sbar-hover: #3a3a44;
   --rad: 10px;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+}
+
+/* Light: surfaces lighten *upward* from a warm off-white page, so the same
+   "s3 is raised" logic reads correctly. Accent darkens to hold contrast on
+   white; the deep code well becomes the palest surface rather than the
+   darkest, keeping code visibly set apart without inverting per-component. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f6f4;
+    --s1: #fbfbfa;
+    --s2: #ffffff;
+    --s3: #f1f1ef;
+    --s4: #e4e4e1;
+    --well: #fafaf8;
+    --well-bd: #e7e7e3;
+    --bd: #e2e2de;
+    --bd2: #d2d2cd;
+    --bd3: #b6b6b0;
+    --tx: #1c1c1f;
+    --tx2: #55555d;
+    --tx3: #78787f;
+    --tx4: #96969d;
+    --ac: #9a5c00;
+    --acd: #7c4a00;
+    --acbg: rgba(154, 92, 0, 0.08);
+    --acbd: rgba(154, 92, 0, 0.28);
+    --acwash: rgba(154, 92, 0, 0.035);
+    --acink: #fff6e8;
+    --ac-hover: #6f4200;
+    --ok: #2f7d54;
+    --okbg: rgba(47, 125, 84, 0.09);
+    --bad: #a83a2d;
+    --badbg: rgba(168, 58, 45, 0.08);
+    --okbd: rgba(47, 125, 84, 0.3);
+    --badbd: rgba(168, 58, 45, 0.3);
+    --add-bg: rgba(47, 125, 84, 0.08);
+    --add-tx: #1e5c3c;
+    --del-bg: rgba(168, 58, 45, 0.07);
+    --del-tx: #8a2f24;
+    --code-tx: #8a4b00;
+    --sidebar-bg: linear-gradient(178deg, #f2f2f0 0%, #ecece8 100%);
+    --header-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 246, 244, 0.92));
+    --inset: rgba(0, 0, 0, 0.025);
+    --scrim: rgba(28, 28, 31, 0.32);
+    --shadow-modal: 0 24px 60px rgba(28, 28, 31, 0.18);
+    --shadow-toast: 0 14px 34px rgba(28, 28, 31, 0.14);
+    --track: linear-gradient(90deg, #d8d8d4, #c8c8c3);
+    --sbar: #cdcdc8;
+    --sbar-hover: #b4b4ae;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f6f4;
+  --s1: #fbfbfa;
+  --s2: #ffffff;
+  --s3: #f1f1ef;
+  --s4: #e4e4e1;
+  --well: #fafaf8;
+  --well-bd: #e7e7e3;
+  --bd: #e2e2de;
+  --bd2: #d2d2cd;
+  --bd3: #b6b6b0;
+  --tx: #1c1c1f;
+  --tx2: #55555d;
+  --tx3: #78787f;
+  --tx4: #96969d;
+  --ac: #9a5c00;
+  --acd: #7c4a00;
+  --acbg: rgba(154, 92, 0, 0.08);
+  --acbd: rgba(154, 92, 0, 0.28);
+  --acwash: rgba(154, 92, 0, 0.035);
+  --acink: #fff6e8;
+  --ac-hover: #6f4200;
+  --ok: #2f7d54;
+  --okbg: rgba(47, 125, 84, 0.09);
+  --bad: #a83a2d;
+  --badbg: rgba(168, 58, 45, 0.08);
+  --okbd: rgba(47, 125, 84, 0.3);
+  --badbd: rgba(168, 58, 45, 0.3);
+  --add-bg: rgba(47, 125, 84, 0.08);
+  --add-tx: #1e5c3c;
+  --del-bg: rgba(168, 58, 45, 0.07);
+  --del-tx: #8a2f24;
+  --code-tx: #8a4b00;
+  --sidebar-bg: linear-gradient(178deg, #f2f2f0 0%, #ecece8 100%);
+  --header-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 246, 244, 0.92));
+  --inset: rgba(0, 0, 0, 0.025);
+  --scrim: rgba(28, 28, 31, 0.32);
+  --shadow-modal: 0 24px 60px rgba(28, 28, 31, 0.18);
+  --shadow-toast: 0 14px 34px rgba(28, 28, 31, 0.14);
+  --track: linear-gradient(90deg, #d8d8d4, #c8c8c3);
+  --sbar: #cdcdc8;
+  --sbar-hover: #b4b4ae;
 }
 
 * {
@@ -66,7 +201,7 @@ a {
   text-decoration: none;
 }
 a:hover {
-  color: #ffc463;
+  color: var(--ac-hover);
   text-decoration: underline;
 }
 ::-webkit-scrollbar {
@@ -77,13 +212,13 @@ a:hover {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2a2a32;
+  background: var(--sbar);
   border-radius: 8px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #3a3a44;
+  background: var(--sbar-hover);
   background-clip: content-box;
 }
 
@@ -133,7 +268,7 @@ a:hover {
   flex: 0 0 238px;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(178deg, #101014 0%, #0b0b0e 100%);
+  background: var(--sidebar-bg);
   border-right: 1px solid var(--bd);
 }
 .main {
@@ -151,7 +286,7 @@ a:hover {
   gap: 14px;
   padding: 0 22px;
   border-bottom: 1px solid var(--bd);
-  background: linear-gradient(180deg, rgba(21, 21, 26, 0.9), rgba(11, 11, 14, 0.9));
+  background: var(--header-bg);
 }
 .content {
   flex: 1;
@@ -321,19 +456,19 @@ a:hover {
   white-space: nowrap;
 }
 .chip.accent {
-  background: rgba(242, 168, 59, 0.12);
+  background: var(--acbg);
   color: var(--ac);
   border-color: var(--acbd);
 }
 .chip.ok {
   background: var(--okbg);
   color: var(--ok);
-  border-color: rgba(107, 179, 137, 0.35);
+  border-color: var(--okbd);
 }
 .chip.bad {
   background: var(--badbg);
   color: var(--bad);
-  border-color: rgba(207, 107, 96, 0.35);
+  border-color: var(--badbd);
 }
 
 .meter {
@@ -362,7 +497,7 @@ a:hover {
   max-width: 100%;
   border: 1px solid var(--bd);
   border-radius: var(--rad);
-  background: #07070a;
+  background: var(--well);
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.6;
@@ -375,7 +510,7 @@ a:hover {
 textarea.editor {
   width: 100%;
   min-height: 300px;
-  background: #07070a;
+  background: var(--well);
   border: 1px solid var(--bd2);
   border-radius: var(--rad);
   color: var(--tx);
@@ -479,7 +614,7 @@ textarea.editor::placeholder {
   border-radius: 10px;
   border: 1px solid var(--bd2);
   background: linear-gradient(180deg, var(--s3), var(--s2));
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-toast);
   animation: fmrise 0.25s ease both;
   max-width: 420px;
 }
@@ -551,7 +686,7 @@ textarea.editor::placeholder {
   border-radius: 4px;
   background: var(--s3);
   border: 1px solid var(--bd);
-  color: #e7c98d;
+  color: var(--code-tx);
   overflow-wrap: anywhere;
 }
 .md-pre {
@@ -560,7 +695,7 @@ textarea.editor::placeholder {
   padding: 11px 13px;
   border-radius: 8px;
   border: 1px solid var(--bd);
-  background: #07070a;
+  background: var(--well);
   max-width: 100%;
   overflow-x: auto;
 }

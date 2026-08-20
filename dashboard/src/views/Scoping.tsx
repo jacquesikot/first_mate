@@ -172,7 +172,7 @@ export function ScopingPanel({
             alignItems: "center",
             padding: "12px 14px",
             borderRadius: "var(--rad)",
-            border: `1px solid ${failed ? "rgba(207,107,96,.35)" : "var(--bd2)"}`,
+            border: `1px solid ${failed ? "var(--badbd)" : "var(--bd2)"}`,
             background: "var(--s2)",
             minWidth: 0,
           }}

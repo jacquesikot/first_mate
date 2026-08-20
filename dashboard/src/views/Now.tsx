@@ -162,7 +162,7 @@ export function NowView() {
                 <div
                   style={{
                     borderTop: "1px solid var(--bd)",
-                    background: "#07070a",
+                    background: "var(--well)",
                     padding: "10px 16px",
                     display: "flex",
                     flexDirection: "column",
@@ -192,7 +192,7 @@ export function NowView() {
                       gap: 10,
                       marginTop: 6,
                       paddingTop: 8,
-                      borderTop: "1px solid #14141a",
+                      borderTop: "1px solid var(--well-bd)",
                     }}
                   >
                     <span className="mono" style={{ fontSize: 10.5, color: "var(--tx3)" }}>

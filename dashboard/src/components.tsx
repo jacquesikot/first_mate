@@ -1,8 +1,10 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { ContextInfo, Question, StatusInfo, LivePayload } from "./api";
 import { api } from "./api";
 import { STATUS_GLYPH, ago, ctxColor, statusColor, tokens } from "./format";
 import { Markdown } from "./markdown";
+import { resolveTheme, saveTheme, storedTheme } from "./theme";
+import type { Theme } from "./theme";
 
 // ------------------------------------------------------------- app context
 
@@ -133,6 +135,59 @@ export function Pips({ states }: { states: ("met" | "failed" | "pending")[] }) {
   );
 }
 
+/* Theme toggle. Cycles dark → light → follow-the-OS, because "system" is a
+   real preference and hiding it behind a settings screen we don't have would
+   strand anyone whose machine already switches on a schedule. The glyph shows
+   what is on screen now; the title says what clicking does next. */
+
+const THEME_ORDER: Theme[] = ["dark", "light", "system"];
+const THEME_GLYPH: Record<Theme, string> = { dark: "◐", light: "○", system: "◑" };
+
+export function ThemeToggle() {
+  const [theme, setTheme] = useState<Theme>(storedTheme);
+
+  // On "system", the OS can flip under us; re-render so the glyph stays honest.
+  useEffect(() => {
+    if (theme !== "system") return;
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = () => setTheme("system");
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, [theme]);
+
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length];
+  const label = theme === "system" ? `system · ${resolveTheme(theme)}` : theme;
+
+  return (
+    <button
+      onClick={() => {
+        saveTheme(next);
+        setTheme(next);
+      }}
+      title={`Theme: ${label} — switch to ${next}`}
+      aria-label={`Theme: ${label}. Switch to ${next}.`}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        padding: "6px 11px",
+        borderRadius: 7,
+        border: "1px solid var(--bd)",
+        color: "var(--tx3)",
+        fontSize: 12,
+        fontWeight: 500,
+      }}
+    >
+      <span className="mono" style={{ fontSize: 11 }}>
+        {THEME_GLYPH[theme]}
+      </span>
+      <span className="mono" style={{ fontSize: 10.5, letterSpacing: "0.06em" }}>
+        {theme === "system" ? "auto" : theme}
+      </span>
+    </button>
+  );
+}
+
 export function SectionHead({
   title,
   hint,
@@ -215,7 +270,7 @@ function Diagnosis({ evidence }: { evidence: Record<string, unknown> }) {
         border: "1px solid var(--bd2)",
         borderLeft: "2px solid var(--acbd)",
         borderRadius: 8,
-        background: "rgba(242,168,59,.04)",
+        background: "var(--acwash)",
         padding: "11px 13px",
         display: "flex",
         flexDirection: "column",
@@ -373,7 +428,7 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           gap: 10,
           padding: "10px 15px",
           borderBottom: "1px solid var(--bd)",
-          background: "rgba(0,0,0,.18)",
+          background: "var(--inset)",
           flexWrap: "wrap",
         }}
       >

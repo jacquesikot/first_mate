@@ -220,7 +220,7 @@ function BrowseModal({
         position: "fixed",
         inset: 0,
         zIndex: 90,
-        background: "rgba(4,4,6,.7)",
+        background: "var(--scrim)",
         display: "flex",
         alignItems: "flex-start",
         justifyContent: "center",
@@ -235,7 +235,7 @@ function BrowseModal({
           border: "1px solid var(--bd2)",
           borderRadius: 12,
           background: "linear-gradient(180deg,var(--s3),var(--s1))",
-          boxShadow: "0 30px 80px rgba(0,0,0,.7)",
+          boxShadow: "var(--shadow-modal)",
           overflow: "hidden",
         }}
         onClick={(e) => e.stopPropagation()}
@@ -390,7 +390,7 @@ function PasteContract() {
           style={{
             padding: "10px 14px",
             borderRadius: "var(--rad)",
-            border: "1px solid rgba(207,107,96,.35)",
+            border: "1px solid var(--badbd)",
             background: "var(--badbg)",
             color: "var(--bad)",
             fontSize: 12,

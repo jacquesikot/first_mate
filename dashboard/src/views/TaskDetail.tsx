@@ -340,8 +340,8 @@ function GenerationRail({ step, wall }: { step: StepState; wall: number }) {
                     inset: "0 auto 0 0",
                     width: `${pct}%`,
                     background: liveNow
-                      ? "linear-gradient(90deg,rgba(242,168,59,.30),rgba(242,168,59,.16))"
-                      : "linear-gradient(90deg,#2a2a33,#33333d)",
+                      ? "linear-gradient(90deg,var(--acbd),var(--acbg))"
+                      : "var(--track)",
                     transition: "width .9s linear",
                   }}
                 />
@@ -446,7 +446,7 @@ function StepsTab({ detail }: { detail: TaskDetail }) {
                         border: "1px solid var(--bd2)",
                         borderLeft: "2px solid var(--acbd)",
                         borderRadius: 8,
-                        background: "rgba(242,168,59,.04)",
+                        background: "var(--acwash)",
                         overflow: "hidden",
                       }}
                     >
@@ -515,7 +515,7 @@ function StepsTab({ detail }: { detail: TaskDetail }) {
               gap: 10,
               padding: "11px 15px",
               borderBottom: "1px solid var(--bd)",
-              background: "rgba(0,0,0,.2)",
+              background: "var(--inset)",
             }}
           >
             <span className="label" style={{ color: "var(--tx3)" }}>
@@ -941,7 +941,7 @@ function ChangesTab({ taskId }: { taskId: string }) {
             minWidth: 0,
             border: "1px solid var(--bd)",
             borderRadius: "var(--rad)",
-            background: "#07070a",
+            background: "var(--well)",
             overflow: "hidden",
           }}
         >
@@ -985,15 +985,15 @@ function DiffLines({ text }: { text: string }) {
                 : "ctx";
         const bg =
           kind === "add"
-            ? "rgba(107,179,137,.07)"
+            ? "var(--add-bg)"
             : kind === "del"
-              ? "rgba(207,107,96,.07)"
+              ? "var(--del-bg)"
               : "transparent";
         const color =
           kind === "add"
-            ? "#b8d9c4"
+            ? "var(--add-tx)"
             : kind === "del"
-              ? "#d9b3ae"
+              ? "var(--del-tx)"
               : kind === "hunk"
                 ? "var(--ac)"
                 : kind === "meta"
