@@ -164,3 +164,31 @@ def test_allow_answer_disables_nonpath_tripwire(tmp_path):
     store.answer_question(q.id, "allow", "test")
     contract = store.load_contract(task.id)
     assert contract.tripwires["max_diff_lines"] is False
+
+
+def test_config_backfills_new_keys_without_touching_existing_ones(tmp_path):
+    """An option that exists only in Python is an option nobody knows they
+    have — new defaults must show up in the file the operator edits."""
+    import json
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.json").write_text(json.dumps({
+        "port": 9999, "worker_model": "opus",
+    }, indent=2) + "\n")
+
+    cfg = Store(home).config()
+    # Operator's values win.
+    assert cfg["port"] == 9999 and cfg["worker_model"] == "opus"
+    # New defaults are present in the effective config...
+    assert cfg["supervise_criteria"] is True
+    # ...and written back so they are discoverable and tunable.
+    on_disk = json.loads((home / "config.json").read_text())
+    assert on_disk["port"] == 9999, "must not clobber operator values"
+    assert on_disk["worker_model"] == "opus"
+    assert "supervise_criteria" in on_disk
+    assert "max_gate_supervisions" in on_disk
+    # Idempotent: a second load rewrites nothing new.
+    before = (home / "config.json").read_text()
+    Store(home).config()
+    assert (home / "config.json").read_text() == before

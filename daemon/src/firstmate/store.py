@@ -108,10 +108,28 @@ class Store:
     # ------------------------------------------------------------- config
 
     def config(self) -> dict:
+        """Effective config: defaults, overridden by config.json.
+
+        Keys added by a newer version are backfilled into the file so the
+        operator can actually see and tune them — an option that only
+        exists in Python is an option nobody knows they have. Existing
+        values are never touched.
+        """
         path = self.home / "config.json"
         cfg = dict(DEFAULT_CONFIG)
         if path.exists():
-            cfg.update(json.loads(path.read_text()))
+            stored = json.loads(path.read_text())
+            cfg.update(stored)
+            missing = [k for k in DEFAULT_CONFIG if k not in stored]
+            if missing:
+                # Preserve the operator's key order, append what's new.
+                merged = dict(stored)
+                for k in missing:
+                    merged[k] = DEFAULT_CONFIG[k]
+                try:
+                    path.write_text(json.dumps(merged, indent=2) + "\n")
+                except OSError:
+                    pass  # read-only home: the effective config still holds
         else:
             path.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n")
         return cfg
