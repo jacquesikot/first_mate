@@ -42,6 +42,10 @@ outstanding.
    hasn't had a human — the browser flow is well covered),
    `block-with-timeout` ask mode (park-only today), question batching at
    step boundaries (PRD §6.5), and `--max-budget-usd` per worker.
+   Dashboard-side: the Memory view has no delete-a-single-entry control
+   (full-file edit covers it, and PRD §6.6 says memory is never silently
+   deleted — so this is deliberate until asked for), and compaction has
+   no preview-before-apply (the archive makes it reversible instead).
 
 ## Engine shape after 2026-08-20 (read before touching the orchestrator)
 
@@ -87,10 +91,40 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
 
 ## In progress
 
-- **Nothing.** The memory-loop work is complete, tested, and live-verified.
-  The daemon is running the current code with the dashboard built.
+- **Nothing of mine.** The memory-loop and dashboard work is complete,
+  tested, live-verified and committed. The daemon is running the current
+  code with the dashboard built (bundle `index-Doc1pSrj.js`).
+- **One live task of Jacques's is parked and waiting on him** — not
+  session-8 work, and not to be "cleaned up" by a future session:
+  `i-want-to-complete-the-plann-1b69` ("produce an approved implementation
+  plan for Linear issue ENG-654 … using the reach-plan skill"), on
+  `reach-app`. It reached generation 3 of the `plan` step and parked on
+  `q-4fb8815d`, a well-evidenced Round-1 decision question about where the
+  ranking/writing context UI should live relative to the existing
+  generation-context tab. It resumes by itself once answered
+  (`fm answer q-4fb8815d "<choice>"`, the dashboard inbox, or — once the
+  Slack half lands — Slack). Worth noting for the Slack work: this is
+  exactly the shape of question that should page.
+- **`replan.py` handled a junk amendment correctly, unprompted** — worth
+  recording as the first unplanned field test of the session-7 re-planning
+  path. That task carries a `q-4c56499f` ("test question" → "ignored",
+  answered from the dashboard at 13:24), which routed to a re-plan as any
+  free-text answer does. Rather than dutifully encoding nonsense into the
+  contract, the re-plan recognised it: it added a "NOISE IN THE RECORD"
+  paragraph stating that those two amendments carry no design content and
+  that real Round-1 grilling must still run in full, and **changed no
+  criteria, scope or steps** — exactly the "smallest edit, never relax a
+  criterion" behaviour the prompt asks for. Artifacts are on disk
+  (`replan-q-4c56499f.diff`, `contract-before-q-4c56499f.json`) for
+  anyone auditing. A useful reminder for the Slack work: every free-text
+  answer becomes a contract edit, so Slack's inbound path inherits this
+  same behaviour for free — and must not bypass it.
 
 ## Done
+
+- **2026-08-20** — **The Memory view can create memory, not just edit it (Jacques: "can I have a way to add memory items from the dashboard directly?").** It was supposed to already — but the append box was gated on `selected`, which is only set once a memory file exists, so a fresh install rendered **zero input fields** and the empty state said "append below once a task creates one", i.e. go use the CLI. The one case that most wants a UI was the one case not covered. The box is now always present, with a project picker when there is no file yet, seeded from the existing `/fs/repos` endpoint the New-task picker already uses — memory files are keyed on the repo's directory name, so those suggestions are exactly the right candidates and no new endpoint was needed; recent-task repos are one-click chips. Append stays disabled until both a project and a fact are present, and a footer names the file that will be written. **An adjacent gap turned up while testing:** the project tabs only render with 2+ files and the picker only appeared when nothing was selected, so with exactly one project a second project's memory could never be started from the dashboard either — covered by an "add to another project…" toggle. Verified in headless Chromium from the real empty state: first entry creates the file and the view adopts it, repeat appends work, a second project can be created and switched to.
+
+- **2026-08-20** — **`fm serve` no longer refuses a restart because of a `TIME_WAIT` socket.** The port probe added in session 7 (so a failed bind can never be mistaken for a successful restart) bound *without* `SO_REUSEADDR` while uvicorn binds *with* it — making the probe stricter than the bind it predicts. A socket left in `TIME_WAIT` by the daemon just stopped therefore blocked a restart for up to a minute with "another daemon is probably already running". What made it genuinely hard to see: the error's own advice hides the cause, because `lsof -sTCP:LISTEN` cannot see a `TIME_WAIT` socket and reports the port completely empty. It cost three failed restarts during this session's live verification, and I twice wrote it off as my own `pkill` racing the shutdown before actually testing the bind. Both properties are now pinned by tests: a `TIME_WAIT` leftover no longer blocks the start, and a genuinely listening socket still does. Verified against the real condition — a restart driven straight through a live `TIME_WAIT` socket on 8787.
 
 - **2026-08-20** — **The memory loop (PRD §6.6) — Phase 4's first half.** Project memory existed as plumbing only: one markdown file per project, injected into every worker and scoping session, but written by nothing except the operator typing `fm remember`. So every task started as naive as the first — the same wrong test command, the same undocumented env var, rediscovered from scratch by a worker with no memory of the sessions that already hit it. New `daemon/src/firstmate/learning.py` (444 lines) adds the three writers the PRD names, and the design work was almost entirely about **what stops them writing**.
   **(a) Learning extraction, gated on struggle.** After a step succeeds, `step_struggled` asks the step state whether it hit a wall — a retry, a generation handoff, a loop iteration, a supervisor judgement. A step that passed first try taught nothing, and a call per step to be told "write tests" is exactly how a memory file becomes unreadable. The prompt's whole job is then to *refuse*: `{"fact": null}` is documented as the expected answer, and `learning_none` is emitted so "we looked and there was nothing" stays distinguishable from "we never looked". Three more filters behind the prompt: a length band, an opener blacklist for generic advice, and `already_known` — a content-word overlap check, because memory is append-only and a convergence loop hitting one wall four times would otherwise write four near-identical lines. Bounded at `max_learnings_per_task` (5) so one pathological task can't turn memory into its own changelog. Never fatal: the step is already done and validated, so an extraction that raises is a missed opportunity, not an error.
