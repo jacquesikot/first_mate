@@ -111,3 +111,52 @@ def test_scratch_dir_is_created_and_hidden_from_git(tmp_path):
                             capture_output=True, text=True).stdout
     assert status.strip() == "", f"scratch space leaked into git: {status!r}"
     assert gitops.changed_files(repo) == []
+
+
+# ---- skill state and rounds in the injected context (STATUS 2026-08-20) ----
+
+
+def test_build_inject_carries_skill_state_as_authoritative():
+    from firstmate import skillstate
+
+    state = skillstate.render({
+        "skill": "reach-plan", "phase": "2-grilling",
+        "phases_done": ["1-audit"],
+        "findings": ["ContextTab renders GenerationContextApi"],
+        "outstanding": ["ask about phasing"],
+    })
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=4, attempt=1,
+                        handoff="DONE: asked round 1", skill_state=state)
+    assert "Skill progress so far" in text
+    assert "authoritative" in text
+    assert "ContextTab renders GenerationContextApi" in text
+    # the successor is told not to redo the expensive part
+    assert "Do NOT re-verify" in text
+    assert "fm skill" in text
+    # state precedes the prose handoff: it is the reliable half
+    assert text.index("Skill progress so far") < text.index("Handoff from the")
+
+
+def test_build_inject_omits_skill_state_when_absent():
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=1, attempt=1)
+    assert "Skill progress" not in text
+
+
+def test_build_inject_renders_a_round_answer_per_question():
+    """A round's answers must arrive as separate binding decisions, not as
+    one run-together string."""
+    from firstmate.models import SubQuestion
+
+    q = Question(
+        id="q1", task_id="t", type="decision", question="2 forks to settle",
+        status="answered", answer="rolled up",
+        questions=[
+            SubQuestion(id="q1", question="Keep the tab?", answer="keep both"),
+            SubQuestion(id="q2", question="How to differentiate?",
+                        answer="sub-tabs"),
+        ],
+    )
+    text = build_inject(CONTRACT, CONTRACT.steps[0], generation=2, attempt=1,
+                        answered=[q])
+    assert "Keep the tab?" in text and "A: keep both" in text
+    assert "How to differentiate?" in text and "A: sub-tabs" in text

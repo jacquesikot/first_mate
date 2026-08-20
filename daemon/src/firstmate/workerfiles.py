@@ -168,6 +168,7 @@ def build_inject(
     answered: list[Question] | None = None,
     retry_note: str | None = None,
     loop_note: str | None = None,
+    skill_state: str | None = None,
 ) -> str:
     parts = [
         f"# First Mate — injected context (step '{step.id}', "
@@ -183,7 +184,25 @@ def build_inject(
         parts += ["", "## Operator answers (binding decisions)", ""]
         for q in answered:
             parts.append(f"- Q ({q.type}): {q.question}")
-            parts.append(f"  A: {q.answer}")
+            if q.is_round():
+                for sq in q.questions:
+                    parts.append(f"  - {sq.question}")
+                    parts.append(f"    A: {sq.answer}")
+            else:
+                parts.append(f"  A: {q.answer}")
+    # Skill state comes BEFORE the prose handoff: it is the durable record,
+    # and the handoff is the (less reliable) narrative around it.
+    if skill_state:
+        parts += [
+            "", "## Skill progress so far (durable state — this is authoritative)",
+            "", skill_state.rstrip(), "",
+            "This was recorded by earlier sessions of this same step and "
+            "survives context walls. Do NOT re-verify established findings "
+            "or re-ask settled decisions; pick up from the outstanding list. "
+            "Keep it current as you work with `fm skill` "
+            "(--phase / --phase-done / --finding / --decided / "
+            "--outstanding / --resolve).",
+        ]
     if handoff:
         parts += ["", "## Handoff from the previous session generation", "", handoff.rstrip()]
     if loop_note:

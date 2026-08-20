@@ -40,8 +40,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import (
-    cleanup, guard, learning, relay, spawner, supervisor, validation,
-    workerfiles,
+    cleanup, guard, learning, relay, skillstate, spawner, supervisor,
+    validation, workerfiles,
 )
 from .exec import context, gitops, tmux
 from .models import (
@@ -53,6 +53,10 @@ from .store import Store
 # Every worker may raise questions; nothing else is granted by default.
 DEFAULT_ALLOWED_TOOLS = ["Read", "Glob", "Grep", "Edit", "Write"]
 ASK_TOOL = "Bash(fm ask:*)"
+# Recording durable skill progress is never a privilege decision — it
+# writes only .fm/skill-state.json, and a worker that cannot record
+# progress is a worker that repeats it after the next context wall.
+SKILL_TOOL = "Bash(fm skill:*)"
 
 PARK_GRACE_SECONDS = 90.0  # worker is told to stop after fm ask; then SIGINT
 
@@ -80,8 +84,41 @@ change, approval needed, a failure you cannot diagnose), run:
 --question "..." [--option "A"] [--option "B"] [--default "A"]
   then STOP IMMEDIATELY and end the session. The orchestrator parks the \
 task and resumes with the operator's answer.
+- MULTIPLE questions at once (a skill's grilling round, several \
+independent forks)? Do NOT flatten them into one --question string and do \
+NOT invent an option like "see inline" — the operator gets an unreadable \
+wall of text and a button that answers nothing. Write a JSON array to a \
+file under `.fm/artifacts/` and pass it with --round:
+    [{{"id": "q1", "question": "...?",
+       "options": [{{"label": "...", "recommended": true}}, \
+{{"label": "..."}}]}},
+     {{"id": "q2", "question": "...?", "options": [...]}}]
+    fm ask --type decision --question "<one-paragraph shared preamble: \
+what you verified, why these are being asked>" --round .fm/artifacts/round1.json
+  Each question is shown and answered on its own; the whole round costs \
+the operator ONE interruption. Use --round whenever you have 2+ questions. \
+Mark your recommendation with "recommended": true — never as prose inside \
+the question text. Write the file with the Write tool, not a shell \
+heredoc.
+- NEVER send a test or placeholder question ("test", "test question", \
+etc.). Parking interrupts a real person. If `fm ask` is rejected for its \
+shape or quoting, fix the shape and send the REAL question — a probe wastes \
+the operator's attention and the command refuses them anyway.
 - For trivial assumptions, do NOT stop; record and continue:
     fm ask --type fyi --question "assumed X because Y"
+- RUNNING A SKILL, or any multi-phase work that will outlive one session? \
+Record progress as you go — this file survives context walls and is \
+injected into your replacement verbatim:
+    fm skill --skill <name> --phase "<phase you are in now>"
+    fm skill --phase-done "<phase you just finished>"
+    fm skill --finding "<a verified fact worth not re-deriving>"
+    fm skill --decided "<key>=<what was settled>"
+    fm skill --outstanding "<still to do>"   --resolve "<now done, verbatim>"
+  Do this WHEN each thing happens, not at the end — a session that hits \
+the context wall without recording forces its replacement to redo the \
+work. Record audit results and established facts as --finding: they are \
+the expensive part. If the injected context already lists a finding or a \
+settled decision, TRUST IT and do not re-verify or re-ask.
 - If `fm ask` replies that the question is ALREADY ANSWERED, that answer \
 is binding and the operator has already been consulted — do NOT stop and \
 do NOT re-ask. Carry on with it. Re-asking a settled question is the \
@@ -429,11 +466,17 @@ class TaskRunner:
         loop_note = None
         if self._loop_note and self._loop_note_for == spec.id:
             loop_note = self._loop_note
+        # A step that names a skill gets a state file from its first
+        # session, so there is always somewhere to record progress before
+        # the first context wall rather than after it.
+        if spec.skill:
+            skillstate.seed(worktree, spec.skill)
         inject = workerfiles.build_inject(
             contract, spec, gen, st.attempt,
             memory=memory, handoff=handoff, answered=answered,
             retry_note=self._retry_note if st.attempt > 1 else None,
             loop_note=loop_note,
+            skill_state=skillstate.render(skillstate.load(worktree)),
         )
         workerfiles.write_inject(worktree, inject)
         self.store.save_step_artifact(task.id, spec.id, f"inject-gen{gen}.md", inject)
@@ -443,8 +486,9 @@ class TaskRunner:
             guard_config=guard.build_config(contract, self.config, worktree))
 
         allowed = list(spec.allowed_tools or DEFAULT_ALLOWED_TOOLS)
-        if ASK_TOOL not in allowed:
-            allowed.append(ASK_TOOL)
+        for tool in (ASK_TOOL, SKILL_TOOL):
+            if tool not in allowed:
+                allowed.append(tool)
         step_block = (f"{spec.title}\n{spec.prompt}" if spec.title else spec.prompt)
         if spec.skill:
             step_block = f"Use your '{spec.skill}' skill/command for this step.\n{step_block}"
@@ -462,6 +506,9 @@ class TaskRunner:
                 "FM_TASK_ID": task.id,
                 "FM_STEP_ID": spec.id,
                 "FM_DAEMON_URL": self.daemon_url,
+                # `fm skill` writes .fm/skill-state.json here, so it does
+                # not depend on the worker's cwd staying put.
+                "FM_WORKTREE": str(worktree),
                 "PATH": f"{Path(binary).parent}:{os.environ.get('PATH', '')}",
             },
         )
@@ -1241,8 +1288,12 @@ class TaskRunner:
                                session_id: str, worktree: Path) -> str:
         model = (self.config.get("handoff_model")
                  or spec.model or self.config["worker_model"])
+        # A skill mid-run flushes its durable state before writing prose;
+        # the worker may also have declared the skill itself at runtime.
+        state = skillstate.load(worktree) or {}
+        skill = spec.skill or state.get("skill")
         text = await asyncio.to_thread(
-            relay.request_handoff, worktree, session_id, model)
+            relay.request_handoff, worktree, session_id, model, skill=skill)
         self.store.save_step_artifact(
             task.id, spec.id, f"handoff-gen{generation}.md", text)
         await self.emit("handoff_written", step_id=spec.id, generation=generation)

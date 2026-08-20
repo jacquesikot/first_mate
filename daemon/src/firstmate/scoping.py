@@ -105,6 +105,16 @@ report it generated) under `.fm/artifacts/` with no approval and no scope \
 entry. If a step needs to produce a working file that is not part of the \
 deliverable, put it there — do NOT add it to scope_in, and do NOT invent a \
 repo-root file for it.
+9. If a step's work IS running one of the operator's skills (the goal says \
+"using the reach-plan skill", or the work is exactly what a skill does), \
+set that step's `"skill"` to the skill's name — do not leave it null and \
+mention the skill only in the prompt. First Mate uses that field to grant \
+the `Skill` tool, to keep the skill's own progress across context walls, \
+and to preserve its phase through a relay. A skill-driven step also needs \
+`"Skill"` in its `allowed_tools` (plus `Agent`/`ToolSearch` if the skill \
+fans out or needs MCP tools), and it should be its OWN step: skills are \
+long and multi-phase, so bundling other work into the same step wastes the \
+relay.
 
 ## Waiting and iterating — use the contract, not the step prompt
 
