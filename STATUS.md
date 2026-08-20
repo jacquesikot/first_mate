@@ -10,8 +10,14 @@
 ## Next up (start here)
 
 **Phase 4, second half — the Slack connector (PRD §6.9).** The memory loop
-(the other half of Phase 4) is done; see Done below. Nothing from it is
-outstanding.
+(the other half of Phase 4) is done, and session 9 then made skill-driven
+steps actually work — answerable question *rounds*, durable skill state
+across context walls, and three crash/UX fixes found by running real
+reach-plan tasks. See Done below. Nothing from either is outstanding.
+
+Read **Engine shape** below before starting: rounds and skill state both
+change what a "question" and a "handoff" are, and the Slack connector
+consumes both.
 
 1. **Blocked on Jacques for one thing:** a Slack app with socket mode
    enabled, plus an app-level token (`xapp-…`) and a bot token
@@ -128,44 +134,37 @@ session that only knows the pre-2026-08-20 engine will misread the loop.
 
 ## In progress
 
-- **Nothing of mine.** The round/skill-state work (session 9) and the
-  memory loop (session 8) are complete, tested, live-verified and
-  committed. **The daemon must be restarted to pick up session 9** — it
-  was stopped at the end of the session, and the dashboard bundle is
-  rebuilt.
-- **One live task of Jacques's is parked and waiting on him** — not
-  session-9 work, and not to be "cleaned up" by a future session:
-  `i-want-to-complete-the-plann-1b69` ("produce an approved implementation
-  plan for Linear issue ENG-654 … using the reach-plan skill"), on
-  `reach-app`. It parked on `q-4fb8815d` at generation 3.
-  **Read this before touching it:** that question is the *pre-fix* shape —
-  four questions flattened into one prose blob, plus the phantom
-  "See inline options per question" option. Session 9 fixed the mechanism
-  but deliberately did not rewrite the question already on disk, so the
-  dashboard still renders it as a legacy single question (covered by a
-  test). Two sane options: answer it in free text (each of the four forks
-  addressed in prose — that routes through `replan.py` as any free-text
-  answer does), or abandon it and re-scope, which is the only way to get
-  the new round UI *and* a `steps[].skill` on the contract. Re-scoping is
-  the better demonstration: the old contract predates both fixes, so its
-  `plan` step still carries `skill: null` and will not seed skill state.
-  Worth noting for the Slack work: a round is exactly the shape of
-  question that should page, and Slack's inbound path needs to handle
-  per-sub-question answers, not just one string.
-- **`replan.py` handled a junk amendment correctly, unprompted** — worth
-  recording as the first unplanned field test of the session-7 re-planning
-  path. That task carries a `q-4c56499f` ("test question" → "ignored",
-  answered from the dashboard at 13:24), which routed to a re-plan as any
-  free-text answer does. Rather than dutifully encoding nonsense into the
-  contract, the re-plan recognised it: it added a "NOISE IN THE RECORD"
-  paragraph stating that those two amendments carry no design content and
-  that real Round-1 grilling must still run in full, and **changed no
-  criteria, scope or steps** — exactly the "smallest edit, never relax a
-  criterion" behaviour the prompt asks for. Artifacts are on disk
-  (`replan-q-4c56499f.diff`, `contract-before-q-4c56499f.json`) for
-  anyone auditing. A useful reminder for the Slack work: every free-text
-  answer becomes a contract edit, so Slack's inbound path inherits this
-  same behaviour for free — and must not bypass it.
+- **Nothing outstanding.** Everything from session 9 is implemented,
+  tested, live-verified against real tasks, and committed (7 commits,
+  `fecca67`..`cd775aa`).
+- **The daemon is RUNNING and serving the current code** — started
+  2026-08-20 17:10 from `daemon/.venv/bin/fm serve` on port 8787, with the
+  dashboard bundle rebuilt. Jacques asked for it to be left up. It is an
+  editable install, so a restart is all it ever takes to pick up new code;
+  the dashboard is a static bundle, so a browser reload is enough for
+  front-end changes. **Restart it only when no task is `running`** — a
+  `blocked`/`waiting` task is safe (it holds no session).
+- **No open questions, no live tasks.** All six tasks on disk are terminal
+  (4 `done`, 2 `abandoned`). Nothing is waiting on Jacques.
+- **The ENG-654 planning task finished successfully** —
+  `plan-this-eng-654-task-for-m-cc0f`, `done`, 6 generations, criteria 1/1.
+  It is this session's end-to-end proof: a real reach-plan run through
+  three grilling rounds as answerable *rounds*, skill state carried across
+  five context walls with no re-audit, and the plan saved to Linear
+  (receipt at `.fm/artifacts/eng-654-plan-receipt.json`,
+  `Status: approved 2026-08-20`). Its predecessor
+  `i-want-to-complete-the-plann-1b69` is `abandoned` — Jacques cancelled
+  it; it was the pre-fix run that surfaced the round and skill-state bugs,
+  and its state files are the evidence behind those Done entries. Neither
+  needs anything.
+- **One known gap, deliberately left for Jacques to decide (see Open
+  questions):** a task that reaches `failed` cannot be retried from the
+  dashboard or the API — `POST /run` correctly refuses a terminal status,
+  so recovering the crashed ENG-654 task took a hand-edit of `task.json`
+  (`failed` → `ready`, step → `pending`). The crash that caused it is
+  fixed, but the *recovery path* does not exist. Do not add a retry
+  affordance without asking: reviving a terminal task is exactly the kind
+  of state change this repo makes explicit rather than automatic.
 
 ## Done
 
@@ -340,14 +339,17 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 2. Multi-repo tasks — v1 may declare single-repo only.
 3. Cost controls (per-task budget) — v1 or Phase 5? (`--max-budget-usd` exists on `claude -p`; cheap to wire per-worker.)
 4. Dashboard auth — localhost-only assumed for v1 (daemon already binds 127.0.0.1 only).
+5. **Retrying a `failed` task (new, 2026-08-20).** A crash leaves a task terminal with no way back: `POST /run` refuses a terminal status by design, so recovering the crashed ENG-654 task needed a hand-edit of `task.json`. Reviving a terminal task changes state the operator can't easily reason about (which step? re-run or resume? does the old worktree still apply?), and this repo's habit is to make that explicit rather than automatic — so it needs Jacques's call on the shape, not a guess. Cheapest honest option: `fm retry <task>` that resets the crashed step to `pending` and the task to `ready`, refusing unless the failure was an orchestrator crash (`task_error`) rather than a validation failure — the latter already has the retry/loop ladder and must not be bypassed.
+6. **Does the scoping phase need attention? (open since 2026-08-20.)** Both ENG-654 runs spent ~10-11 minutes in `scoping` before the task began (13:04→13:15, and 14:38→14:48). That is a real share of wall-clock and was never measured or targeted this session — the relay churn beside it was the louder problem and is now fixed. Worth deciding whether it is acceptable (it is one interactive conversation, so possibly yes) before optimising anything.
 
 ## Session log
 
 One dated entry per working session: who/what/outcome, newest first.
 
-- **2026-08-20** — Session 9 addendum 4 (Claude, on Jacques's approved plan going straight to `failed` and looking stuck): the approval landed, then generation 6 never spawned — `tmux: command too long` at 17,298 characters, against a limit I measured at 16K–17K on tmux 3.7b. The cause is structural rather than incidental: `replan` folds every answered question into the step prompt, so the prompt grows monotonically with operator interaction and *any* well-discussed task was going to hit this eventually, always at the end, always after the expensive work. Fixed by writing the prompt to a file and referencing it as `"$(cat …)"` so the command is constant-length (42K prompt → 249-char command); proven on the real thing both before (46K prompt delivered through tmux, model read line 617 of it) and after (generation 6 respawned and ran). Also fixed the reason it *looked* stuck rather than broken: the crash handler failed the task but left the step `running`. Repaired this task's state by hand and re-ran it — the approved plan is now on its way to Linear. 320 daemon tests.
+- **2026-08-20** — **Session 9 closed.** One report from Jacques ("First Mate does not handle tasks that run a skill like reach-plan within the task well") turned into seven commits and five distinct bugs, every one of them found by running real reach-plan tasks against `reach-app` rather than by reading code. In order: (1) `fm ask` could not express a multi-question round, so a skill's grilling flattened into an unreadable blob with a fake "See inline options" button that submitted its own label as the binding answer — fixed with `fm ask --round`, per-question options and a dashboard card that refuses partial submission; (2) skill progress died with each session, so one task re-ran its entire repo audit three times — fixed with `.fm/skill-state.json`, injected ahead of the prose handoff and authoritative over it; (3) a worker ended its turn asking a human who wasn't there, burning a validation attempt on a session that did no work — fixed with a blunt prompt and a tail-only detector that re-prompts *without* spending an attempt; (4) `.fm/artifacts/` was invisible in the dashboard even though it holds the whole deliverable of a planning task — fixed with an Artifacts tab, kept out of the diff by design; (5) worst of all, `tmux: command too long` at 17,298 chars killed a task *after* Jacques had approved its plan, because `replan` grows the step prompt with every answer and the prompt rode in the tmux command line — fixed by moving it to a file, making command length constant. **The through-line: four of the five were structural inevitabilities, not flukes** — a schema that couldn't express what skills do, prose as the only carrier across a context wall, and a command line carrying something that grows with use. Each one was guaranteed to fire on a long enough task, and three of them fired at the end, after the expensive work. Also worth keeping: I got two diagnoses wrong mid-session and corrected them before writing code (the criterion failure was a void-ask, not a validation-ordering bug — the fix Jacques had approved would have missed it), and once explained away a screenshot with DOM evidence that was true but led to a false conclusion. Believing the screenshot over the probe is now written into the Done entry. Final state: 232 → 320 daemon tests, 13 → 25 dashboard tests, the ENG-654 plan on Linear, all tasks terminal, daemon left running at Jacques's request. **Next: the Slack connector, still blocked only on tokens** — and it must handle rounds (per-sub-question answers, not one string).
+- **2026-08-20** — Session 9 addendum 4 (Claude, on Jacques's approved plan going straight to `failed` and looking stuck): the approval landed, then generation 6 never spawned — `tmux: command too long` at 17,298 characters, against a limit I measured at 16K–17K on tmux 3.7b. The cause is structural rather than incidental: `replan` folds every answered question into the step prompt, so the prompt grows monotonically with operator interaction and *any* well-discussed task was going to hit this eventually, always at the end, always after the expensive work. Fixed by writing the prompt to a file and referencing it as `"$(cat …)"` so the command is constant-length (42K prompt → 249-char command); proven on the real thing both before (46K prompt delivered through tmux, model read line 617 of it) and after (generation 6 respawned and ran). Also fixed the reason it *looked* stuck rather than broken: the crash handler failed the task but left the step `running`. Repaired this task's state by hand and re-ran it: generation 6 spawned, the step passed its criterion, and the task reached **`done`** with the plan saved to ENG-654 (receipt: `Status: approved 2026-08-20`). That run is this session's end-to-end proof — rounds, skill state, the void-ask backstop and the tmux fix all exercised by one real reach-plan task across 6 generations. Left one gap for Jacques (Open questions #5): a `failed` task has no retry path, so the recovery above needed a hand-edit. 320 daemon tests.
 - **2026-08-20** — Session 9 addendum 3 (Claude, on Jacques asking to put the raw view behind a button and show formatted by default): the toggle was the small half. The tab had looked unformatted because `CopyButton` renders `label ?? text` and I had passed it a 14KB plan with no label — the whole document became a single monospace button covering the panel, with the correctly-rendered markdown 3,800px below it. Fixed with explicit labels plus a test that the button renders its label, not its payload; also fixed `.card-flat`'s `overflow: hidden` silently beating the inline `maxHeight`/`overflowY` on the same element (page 10,000px → 1,013px). Source is now an appended disclosure that never replaces the rendered document. The lesson worth keeping: my DOM probes said "markdown renders fine" three times while the screenshot showed raw text, and both were true — the element existed, just far below the fold. `elementFromPoint` at the pixel I was looking at settled it immediately. 25 dashboard tests.
-- **2026-08-20** — Session 9 addendum 2 (Claude, on Jacques asking why a file written to `.fm/artifacts/` showed no changes in the dashboard): expected, but the wrong outcome. `.fm/` is git-excluded and diff-filtered on purpose, which is right for orchestration state and wrong for `.fm/artifacts/` — where a planning task's whole deliverable lives. Added `GET /tasks/{id}/artifacts` + `/artifacts/file` (traversal-confined, 512KB inline cap) and an Artifacts tab with markdown rendering and a raw toggle, kept out of the diff by design. Verified in headless Chromium against the live ENG-654 task. Two things I got wrong and checked rather than assumed: a test failure I first read as a code bug was my own fixture not being a git repo, and a screenshot I read as "markdown not rendering" turned out to be the plan's dense inline `code` spans — the live DOM had 3 `<ol>` and 56 `<li>` and no `<pre>` fallback, so there was no renderer bug and no fix was needed. 307 → 315 daemon tests. Also visible while verifying: the task had reached Phase 3 and parked on an approval question with the draft ready, so rounds + skill state + the void-ask fix are all holding up on a real multi-round skill run.
+- **2026-08-20** — Session 9 addendum 2 (Claude, on Jacques asking why a file written to `.fm/artifacts/` showed no changes in the dashboard): expected, but the wrong outcome. `.fm/` is git-excluded and diff-filtered on purpose, which is right for orchestration state and wrong for `.fm/artifacts/` — where a planning task's whole deliverable lives. Added `GET /tasks/{id}/artifacts` + `/artifacts/file` (traversal-confined, 512KB inline cap) and an Artifacts tab with markdown rendering and a raw toggle, kept out of the diff by design. Verified in headless Chromium against the live ENG-654 task. Two things I got wrong and checked rather than assumed: a test failure I first read as a code bug was my own fixture not being a git repo, and a screenshot I read as "markdown not rendering" I explained away as dense inline `code` spans because the DOM said 3 `<ol>` / 56 `<li>` / no `<pre>`. **That explanation was wrong** — addendum 3 found the real cause (an unlabelled `CopyButton` rendering the whole 14KB document as its own face, with the real markdown pushed 3,800px below it). The DOM evidence was true and the conclusion drawn from it was not. 307 → 315 daemon tests. Also visible while verifying: the task had reached Phase 3 and parked on an approval question with the draft ready, so rounds + skill state + the void-ask fix are all holding up on a real multi-round skill run.
 - **2026-08-20** — Session 9 addendum (Claude, on Jacques asking why his new task showed a criteria failure and no reach-plan questions): the two session-9 fixes were working — a clean 4-question round was open and skill state held Phase 1 plus three audit findings — but generation 1 had burned an attempt on `receipt_valid`. **My first diagnosis was wrong and I corrected it before writing code:** I assumed validation had run with a question outstanding, and the fix Jacques approved on that basis would not have caught the real bug. Gen 1 asked nothing at all; it ended its reply with "Let me know if I've mischaracterized anything before I dig in." — a check-in to a human who isn't there. Fixed by telling the worker plainly that no human reads its replies (naming the interactive-skill playback habit specifically), plus `spawner.asked_the_void` as a mechanical backstop that re-prompts on a tail-only match **without consuming a validation attempt**, once per step. Verified against the real task files (gen 1 fires, gen 2 silent). 273 → 307 daemon tests. Worth remembering: the scan for this pattern across every worker run on disk found exactly one occurrence, so this was a real but rare failure, and gen 2 self-recovered.
 - **2026-08-20** — Session 9 (Claude, on Jacques's feedback that "First Mate does not handle tasks that run a skill like reach-plan within the task well"): two reported problems, both diagnosed from the real task's state files before any code was written. The jumbled unanswerable question was **a schema limit, not a rendering bug** — `fm ask` had one question string and one flat option list, so reach-plan's 4-question grilling round was inexpressible and the worker flattened it; the "See inline options per question" button Jacques clicked was a fake option the worker invented for want of anywhere to say "options are inline", and it submitted that sentence as his binding answer. The slowness was a *third* thing hiding behind the same task: 3 generations, 3 context walls, and gen3's handoff shows it re-running the entire repo audit for the third time because prose handoffs kept telling the successor not to trust the prior audit. Built `fm ask --round` (per-question options, `recommended`, one park per round, JSON via file so the round's prose never fights the shell), a dashboard card that renders and answers each question separately and refuses partial submission, a probe refusal so no worker can park "test question" again, and `skillstate.py`/`fm skill` — a `jq`-readable `.fm/skill-state.json` that is injected *ahead of* the prose handoff and labelled authoritative, with lists that union so a later session cannot drop an earlier one's findings. Also taught the scoping prompt what `steps[].skill` is for; it was `None` on the real task even though the step was literally "use the reach-plan skill". Live-verified against a running daemon (round parked with no phantom option, partial answer rejected naming the missing ids, full answer recorded per-decision into an auditable amendment, `test question` refused, state accumulated across two generations). 232 → 273 daemon tests, 13 → 24 dashboard tests. Jacques's parked ENG-654 task was deliberately left untouched — see In progress.
 - **2026-08-20** — Session 8 addendum (Claude, on Jacques asking for a way to add memory items from the dashboard): it was *supposed* to exist already — but the append box was gated on `selected`, which is only set once a memory file exists, so a fresh install could edit memory it had and never create the first entry. The empty state even said "append below once a task creates one", i.e. go use the CLI. Ungated it and added a project picker seeded from the existing `/fs/repos` endpoint (memory files are keyed on the repo's directory name, so the New-task picker's suggestions are exactly the right candidates — no new endpoint). Found the adjacent gap while testing: project tabs only render with 2+ files and the picker only showed when nothing was selected, so with exactly one project a second could never be started from the dashboard either — covered by an "add to another project…" toggle. Verified in headless Chromium from the real empty state.
