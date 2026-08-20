@@ -420,6 +420,17 @@ def cmd_status(_args) -> int:
             print(f"  {q['id']}  ({q['type']}, task {q['task_id']}): "
                   f"{q['question']}{opts}")
             print(f"    answer with: fm answer {q['id']} <choice>")
+    if not offline:
+        try:
+            sugs = api("GET", "/memory-suggestions").get("suggestions", [])
+        except CliError:
+            sugs = []
+        if sugs:
+            print(f"\n{len(sugs)} answer(s) have recurred across tasks and "
+                  f"could become project memory:")
+            for sug in sugs:
+                print(f"  {sug['id']}  ({sug['project']}): {sug['fact']}")
+            print("  review with: fm memory suggestions")
     return 0
 
 
@@ -468,6 +479,103 @@ def cmd_remember(args) -> int:
     path = Store().remember(project, args.fact)
     print(f"remembered for '{project}': {path}")
     return 0
+
+
+def _default_project() -> str:
+    import subprocess
+
+    proc = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                          capture_output=True, text=True)
+    top = proc.stdout.strip()
+    return Path(top).name if proc.returncode == 0 and top else Path.cwd().name
+
+
+def cmd_memory(args) -> int:
+    """Inspect project memory and run the memory loop's operations.
+
+    Reading falls back to the state files when the daemon is down (memory
+    is plain markdown on disk — that is the point of it). Compaction needs
+    the daemon, because it is an LLM call and the daemon owns those.
+    """
+    from .store import Store
+
+    action = args.action or "show"
+
+    if action == "list":
+        try:
+            data = api("GET", "/memory")
+            projects, threshold = data["projects"], data.get("compact_bytes", 0)
+        except CliError:
+            store = Store()
+            threshold = int(store.config().get("memory_compact_bytes") or 0)
+            projects = store.list_memory()
+            for pr in projects:
+                pr["compact_due"] = bool(threshold and pr["bytes"] >= threshold)
+        if not projects:
+            print("no project memory yet")
+            return 0
+        print(f"{'PROJECT':<28} {'ENTRIES':>7} {'BYTES':>8}  UPDATED")
+        for pr in projects:
+            flag = "  (compaction due)" if pr.get("compact_due") else ""
+            print(f"{pr['project']:<28} {pr['entries']:>7} {pr['bytes']:>8}  "
+                  f"{pr['updated_at']}{flag}")
+        return 0
+
+    if action == "show":
+        project = args.project or _default_project()
+        text = Store().memory_for_project(project)
+        if text is None:
+            print(f"no memory for project: {project}", file=sys.stderr)
+            return 1
+        print(text, end="" if text.endswith("\n") else "\n")
+        return 0
+
+    if action == "suggestions":
+        data = api("GET", "/memory-suggestions")
+        sugs = data.get("suggestions", [])
+        if not sugs:
+            print("no pending suggestions")
+            return 0
+        print(f"{len(sugs)} pending 'promote to memory?' suggestion(s):")
+        for sug in sugs:
+            print(f"\n  {sug['id']}  ({sug['project']}, seen on "
+                  f"{sug['occurrences']} tasks)")
+            print(f"    {sug['fact']}")
+            print(f"    accept with: fm memory promote {sug['id']}")
+            print(f"    dismiss with: fm memory dismiss {sug['id']}")
+        return 0
+
+    if action in ("promote", "dismiss"):
+        if not args.id:
+            print(f"fm memory {action}: a suggestion id is required",
+                  file=sys.stderr)
+            return 1
+        verb = "accept" if action == "promote" else "dismiss"
+        body = {"fact": args.fact} if action == "promote" and args.fact else {}
+        resp = api("POST", f"/memory-suggestions/{args.id}/{verb}", body)
+        sug = resp["suggestion"]
+        if action == "promote":
+            # Report what was actually written, not the suggested wording —
+            # --fact overrides it, and echoing the original would misreport
+            # the operator's own edit back to them.
+            print(f"promoted to {resp.get('project') or sug['project']} "
+                  f"memory: {args.fact or sug['fact']}")
+        else:
+            print(f"dismissed {sug['id']} — this situation won't be "
+                  f"suggested again")
+        return 0
+
+    if action == "compact":
+        project = args.project or _default_project()
+        print(f"compacting {project} memory (this is an LLM pass)…")
+        resp = api("POST", f"/memory/{project}/compact", {}, timeout=360)
+        print(f"{project}: {resp['before_bytes']} → {resp['after_bytes']} bytes")
+        if resp.get("archived"):
+            print(f"previous version archived at {resp['archived']}")
+        return 0
+
+    print(f"fm memory: unknown action {action!r}", file=sys.stderr)
+    return 2
 
 
 def cmd_ask(args) -> int:
@@ -658,6 +766,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("fact")
     sp.add_argument("-p", "--project", default=None)
     sp.set_defaults(func=cmd_remember)
+
+    sp = sub.add_parser("memory", help="inspect project memory, promote "
+                                       "recurring answers, compact")
+    sp.add_argument("action", nargs="?", default="show",
+                    choices=["show", "list", "suggestions", "promote",
+                             "dismiss", "compact"])
+    sp.add_argument("id", nargs="?", default=None,
+                    help="suggestion id (promote/dismiss)")
+    sp.add_argument("-p", "--project", default=None)
+    sp.add_argument("--fact", default=None,
+                    help="override the wording when promoting")
+    sp.set_defaults(func=cmd_memory)
 
     sp = sub.add_parser("ask", help="(worker-facing) raise a question")
     sp.add_argument("--type", required=True,

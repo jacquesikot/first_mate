@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import type { MemoryProject } from "../api";
+import type { MemoryProject, MemorySuggestion } from "../api";
 import { api } from "../api";
 import { useApp, SectionHead } from "../components";
 import { ago } from "../format";
 
 export function MemoryView() {
-  const { toast } = useApp();
+  const { toast, refresh } = useApp();
   const [projects, setProjects] = useState<MemoryProject[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [text, setText] = useState<string>("");
@@ -13,6 +13,7 @@ export function MemoryView() {
   const [draft, setDraft] = useState("");
   const [fact, setFact] = useState("");
   const [busy, setBusy] = useState(false);
+  const [suggestions, setSuggestions] = useState<MemorySuggestion[]>([]);
 
   const loadList = () =>
     api
@@ -23,8 +24,15 @@ export function MemoryView() {
       })
       .catch(() => {});
 
+  const loadSuggestions = () =>
+    api
+      .memorySuggestions()
+      .then((d) => setSuggestions(d.suggestions))
+      .catch(() => {});
+
   useEffect(() => {
     loadList();
+    loadSuggestions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -47,6 +55,57 @@ export function MemoryView() {
       loadList();
     } catch (e) {
       toast("Append failed", String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const promote = async (sug: MemorySuggestion) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const d = await api.promoteSuggestion(sug.id);
+      if (d.project === selected) setText(d.text);
+      toast("Promoted to project memory", sug.fact);
+      loadSuggestions();
+      loadList();
+      refresh(); // drops the sidebar badge now, not on the next poll
+    } catch (e) {
+      toast("Promotion failed", String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dismiss = async (sug: MemorySuggestion) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.dismissSuggestion(sug.id);
+      toast("Dismissed", "This situation won't be suggested again");
+      loadSuggestions();
+      refresh();
+    } catch (e) {
+      toast("Dismiss failed", String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const compact = async () => {
+    if (!selected || busy) return;
+    setBusy(true);
+    toast("Compacting…", "an LLM pass over the file — the current version is archived first");
+    try {
+      const d = await api.compactMemory(selected);
+      setText(d.text);
+      toast(
+        "Memory compacted",
+        `${d.before_bytes} → ${d.after_bytes} bytes${d.archived ? " · previous version archived" : ""}`,
+      );
+      loadList();
+    } catch (e) {
+      toast("Compaction failed", String(e), "bad");
     } finally {
       setBusy(false);
     }
@@ -91,6 +150,49 @@ export function MemoryView() {
           injected into every worker and scoping session
         </span>
       </div>
+
+      {suggestions.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <SectionHead
+            title="promote to memory?"
+            hint={`${suggestions.length} answer${
+              suggestions.length === 1 ? "" : "s"
+            } that recurred across tasks`}
+          />
+          {suggestions.map((sug) => (
+            <div
+              key={sug.id}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 9,
+                padding: "13px 15px",
+                borderRadius: "var(--rad)",
+                border: "1px solid var(--acbd)",
+                background: "var(--acbg)",
+              }}
+            >
+              <div style={{ fontSize: 13.5, color: "var(--tx)" }}>{sug.fact}</div>
+              <div
+                className="mono"
+                style={{ fontSize: 11, color: "var(--tx4)", lineHeight: 1.6 }}
+              >
+                answered the same way on {sug.occurrences} tasks · {sug.project}
+                <br />
+                {sug.task_ids.join(" · ")}
+              </div>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button className="btn" onClick={() => dismiss(sug)} disabled={busy}>
+                  Not a project fact
+                </button>
+                <button className="btn accent" onClick={() => promote(sug)} disabled={busy}>
+                  Remember it
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {projects.length > 1 && (
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -171,7 +273,29 @@ export function MemoryView() {
               >
                 {text || "(empty)"}
               </div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <div
+                style={{ display: "flex", justifyContent: "flex-end", gap: 8, alignItems: "center" }}
+              >
+                {projects.find((p) => p.project === selected)?.compact_due && (
+                  <span
+                    className="mono"
+                    style={{ fontSize: 11, color: "var(--tx4)", marginRight: "auto" }}
+                  >
+                    large enough to crowd the context it feeds — consolidating keeps every
+                    fact and archives this version first
+                  </span>
+                )}
+                <button
+                  className={
+                    projects.find((p) => p.project === selected)?.compact_due
+                      ? "btn accent"
+                      : "btn"
+                  }
+                  onClick={compact}
+                  disabled={busy}
+                >
+                  Compact
+                </button>
                 <button
                   className="btn"
                   onClick={() => {

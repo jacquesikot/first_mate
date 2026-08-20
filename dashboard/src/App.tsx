@@ -138,7 +138,9 @@ export default function App() {
     { key: "now", label: "Now", glyph: "◆", badge: blocking },
     { key: "tasks", label: "Tasks", glyph: "≡", badge: running + scoping },
     { key: "inbox", label: "Inbox", glyph: "◇", badge: openQuestions.length },
-    { key: "memory", label: "Memory", glyph: "▪", badge: 0 },
+    // Suggestions, not demands: badged so they're findable, and kept out
+    // of the "needs you" counter because nothing is waiting on them.
+    { key: "memory", label: "Memory", glyph: "▪", badge: status?.memory_suggestions ?? 0 },
   ];
 
   const headTitle = {

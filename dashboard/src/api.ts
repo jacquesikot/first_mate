@@ -258,6 +258,8 @@ export interface DiffInfo {
 export interface StatusInfo {
   tasks: TaskRow[];
   questions: Question[];
+  /** Pending "promote to memory?" suggestions — informational, never blocking. */
+  memory_suggestions?: number;
   config: { max_workers: number; wall_tokens: number };
 }
 
@@ -343,6 +345,23 @@ export interface MemoryProject {
   bytes: number;
   entries: number;
   updated_at: string;
+  /** Large enough that consolidating it is worth offering (never automatic). */
+  compact_due?: boolean;
+}
+
+/** A recurring answer the system offers to make a standing project fact. */
+export interface MemorySuggestion {
+  id: string;
+  status: "pending" | "accepted" | "dismissed";
+  project: string;
+  fingerprint: string;
+  fact: string;
+  question: string;
+  answer: string;
+  task_ids: string[];
+  occurrences: number;
+  question_id: string;
+  created_at: string;
 }
 
 export interface LivePayload {
@@ -435,7 +454,26 @@ export const api = {
     ),
   scopeAbandon: (id: string) =>
     req<{ chat: ScopingChat }>("POST", `/scoping/${id}/abandon`),
-  memory: () => req<{ projects: MemoryProject[] }>("GET", "/memory"),
+  memory: () =>
+    req<{ projects: MemoryProject[]; compact_bytes: number }>("GET", "/memory"),
+  memorySuggestions: () =>
+    req<{ suggestions: MemorySuggestion[] }>("GET", "/memory-suggestions"),
+  promoteSuggestion: (id: string, fact?: string) =>
+    req<{ suggestion: MemorySuggestion; project: string; text: string }>(
+      "POST",
+      `/memory-suggestions/${id}/accept`,
+      fact ? { fact } : {},
+    ),
+  dismissSuggestion: (id: string) =>
+    req<{ suggestion: MemorySuggestion }>("POST", `/memory-suggestions/${id}/dismiss`),
+  compactMemory: (project: string) =>
+    req<{
+      project: string;
+      text: string;
+      before_bytes: number;
+      after_bytes: number;
+      archived: string | null;
+    }>("POST", `/memory/${project}/compact`),
   memoryFile: (project: string) =>
     req<{ project: string; text: string }>("GET", `/memory/${project}`),
   remember: (project: string, fact: string) =>
