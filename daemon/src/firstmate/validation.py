@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import Criterion
+from .models import Criterion, Gate
 
 OUTPUT_CAP = 20_000  # chars kept per stream; enough to debug, still jq-able
 
@@ -65,3 +65,17 @@ def run_criterion(worktree: Path, crit: Criterion) -> CriterionResult:
 
 def run_criteria(worktree: Path, criteria: list[Criterion]) -> list[CriterionResult]:
     return [run_criterion(worktree, c) for c in criteria]
+
+
+def run_gate(worktree: Path, gate: Gate) -> CriterionResult:
+    """Probe a step's `when` gate once. Passing means the step may run.
+
+    Deliberately reuses the criterion machinery: a gate is the same kind
+    of machine-checkable shell fact, just evaluated before the work rather
+    than after it.
+    """
+    return run_criterion(
+        worktree,
+        Criterion(id="gate", command=gate.command, kind=gate.kind,
+                  cwd=gate.cwd, timeout=gate.timeout),
+    )

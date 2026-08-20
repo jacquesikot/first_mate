@@ -222,11 +222,31 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
     setBusy(true);
     try {
       const r = await api.answer(q.id, answer.trim());
-      toast(
-        `Answer recorded · ${answer.trim()}`,
-        `appended to the contract · ${q.id}${r.resumed ? " · task resuming" : ""}`,
-        r.resumed ? "run" : "ok"
-      );
+      // A free-text answer can rewrite the contract; say so plainly, because
+      // "recorded" would understate what just happened.
+      if (r.replan?.applied) {
+        toast(
+          "Contract updated from your answer",
+          `${r.replan.summary || "the plan was re-planned"}${
+            r.resumed ? " · task resuming" : ""
+          }`,
+          "run"
+        );
+      } else if (r.replan && !r.replan.applied) {
+        toast(
+          "Answer recorded — the plan was not changed",
+          r.replan.errors?.join("; ") ||
+            r.replan.summary ||
+            "no contract edit could be derived from it",
+          "ok"
+        );
+      } else {
+        toast(
+          `Answer recorded · ${answer.trim()}`,
+          `appended to the contract · ${q.id}${r.resumed ? " · task resuming" : ""}`,
+          r.resumed ? "run" : "ok"
+        );
+      }
       refresh();
     } catch (e) {
       toast("Answer failed", String(e), "bad");
@@ -393,8 +413,12 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span style={{ fontSize: 13 }}>{q.answer ?? "noted"}</span>
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx3)" }}>
-              {q.answered_by ? `by ${q.answered_by}` : q.status} ·{" "}
-              {ago(q.answered_at ?? q.asked_at)} ago
+              {q.answered_from
+                ? "reused your earlier answer — you were not asked again"
+                : q.answered_by
+                  ? `by ${q.answered_by}`
+                  : q.status}{" "}
+              · {ago(q.answered_at ?? q.asked_at)} ago
             </span>
           </div>
         </div>

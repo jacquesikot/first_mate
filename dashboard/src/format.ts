@@ -3,6 +3,8 @@
 
 export const STATUS_GLYPH: Record<string, string> = {
   running: "●",
+  // Parked on an external precondition — no session, no tokens, no slot.
+  waiting: "◔",
   blocked: "◐",
   validating: "◍",
   ready: "○",
@@ -20,6 +22,10 @@ export function statusColor(status: string): string {
     case "blocked":
     case "validating":
       return "var(--ac)";
+    case "waiting":
+      // Deliberately not the attention colour: waiting is healthy progress,
+      // not something the operator needs to act on.
+      return "var(--tx2)";
     case "failed":
       return "var(--bad)";
     case "done":

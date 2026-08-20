@@ -41,6 +41,18 @@ export interface Question {
   answered_by: string | null;
   asked_at: string;
   answered_at: string | null;
+  /** Identity of the situation, so an equivalent re-ask reuses this answer. */
+  fingerprint: string;
+  /** Set when this was auto-answered from an earlier equivalent question. */
+  answered_from: string | null;
+}
+
+/** Result of turning a free-text answer into a contract edit. */
+export interface ReplanOutcome {
+  applied: boolean;
+  summary?: string;
+  diff?: string;
+  errors?: string[];
 }
 
 export interface SessionRecord {
@@ -54,6 +66,14 @@ export interface SessionRecord {
   peak_tokens: number;
 }
 
+export interface GateState {
+  first_probe_at: string;
+  last_probe_at: string;
+  probes: number;
+  last_exit: number | null;
+  last_output: string;
+}
+
 export interface StepState {
   id: string;
   status: string;
@@ -61,6 +81,11 @@ export interface StepState {
   generation: number;
   last_failure: string | null;
   sessions: SessionRecord[];
+  /** Convergence-loop rounds this step's on_failure edge has taken. */
+  iteration: number;
+  last_failure_signature: string;
+  /** Progress of the step's `when` gate, while it is waiting. */
+  gate: GateState | null;
 }
 
 export interface Task {
@@ -89,6 +114,24 @@ export interface Criterion {
   timeout: number;
 }
 
+/** A precondition First Mate waits on before running a step — polled by
+ *  the daemon, so waiting holds no session open and costs no tokens. */
+export interface Gate {
+  command: string;
+  kind: string;
+  cwd: string;
+  interval: number;
+  ceiling: number;
+  timeout: number;
+  description: string;
+}
+
+/** Where the task rewinds to when a step's criteria fail. */
+export interface LoopBack {
+  goto: string;
+  max_iterations: number;
+}
+
 export interface StepSpec {
   id: string;
   prompt: string;
@@ -97,6 +140,8 @@ export interface StepSpec {
   model: string | null;
   allowed_tools: string[];
   criteria: string[];
+  when: Gate | null;
+  on_failure: LoopBack | null;
 }
 
 export interface Amendment {
@@ -105,6 +150,9 @@ export interface Amendment {
   question: string;
   answer: string;
   by: string;
+  /** Set when the answer was applied as a contract re-plan. */
+  summary?: string;
+  diff_artifact?: string;
 }
 
 export interface Contract {
@@ -312,10 +360,11 @@ export const api = {
   pause: (id: string) => req("POST", `/tasks/${id}/pause`),
   abandon: (id: string) => req("POST", `/tasks/${id}/abandon`),
   answer: (qid: string, answer: string) =>
-    req<{ question: Question; resumed: boolean }>("POST", `/questions/${qid}/answer`, {
-      answer,
-      by: "dashboard",
-    }),
+    req<{ question: Question; resumed: boolean; replan?: ReplanOutcome }>(
+      "POST",
+      `/questions/${qid}/answer`,
+      { answer, by: "dashboard" }
+    ),
   createTask: (contract: unknown, run: boolean) =>
     req<{ task: Task; started: boolean }>("POST", "/tasks", { contract, run }),
   editContract: (id: string, contract: unknown) =>

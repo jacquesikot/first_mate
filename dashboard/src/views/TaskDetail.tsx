@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { DiffInfo, TaskDetail, StepState, CriterionResult, LivePayload } from "../api";
+import type {
+  DiffInfo, TaskDetail, StepState, CriterionResult, LivePayload, Gate, GateState,
+} from "../api";
 import { api, socket } from "../api";
 import {
   useApp,
@@ -206,6 +208,59 @@ function latestResults(detail: TaskDetail): Record<string, CriterionResult> {
   return out;
 }
 
+/** What First Mate is waiting for, and how long it has been at it.
+ *  Waiting is deliberately shown as progress rather than as a problem —
+ *  the task holds no session open while this is on screen. */
+function GateWait({ gate, state }: { gate: Gate; state: GateState | null }) {
+  const started = state?.first_probe_at ? new Date(state.first_probe_at).getTime() : null;
+  const elapsed = started ? Math.max(0, Date.now() - started) / 1000 : 0;
+  const pct = gate.ceiling > 0 ? Math.min(100, (elapsed / gate.ceiling) * 100) : 0;
+  const mins = (n: number) => `${Math.floor(n / 60)}m`;
+  return (
+    <div
+      style={{
+        border: "1px solid var(--bd2)",
+        borderLeft: "2px solid var(--bd)",
+        borderRadius: 8,
+        padding: "10px 12px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 7,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+        <span
+          className="mono"
+          style={{
+            fontSize: 10,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--tx3)",
+          }}
+        >
+          waiting
+        </span>
+        <span style={{ fontSize: 12.5, color: "var(--tx2)" }}>
+          for {gate.description || "a precondition"}
+        </span>
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--tx4)" }}>
+          {mins(elapsed)} of {mins(gate.ceiling)} · {state?.probes ?? 0} checks · every{" "}
+          {gate.interval}s
+        </span>
+      </div>
+      <div style={{ height: 3, background: "var(--bd2)", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: "var(--tx3)" }} />
+      </div>
+      <div className="mono" style={{ fontSize: 10.5, color: "var(--tx4)", wordBreak: "break-all" }}>
+        {gate.command}
+      </div>
+      <div className="mono" style={{ fontSize: 10.5, color: "var(--tx4)" }}>
+        no session running — this wait consumes no context and no worker slot
+      </div>
+    </div>
+  );
+}
+
 function GenerationRail({ step, wall }: { step: StepState; wall: number }) {
   if (!step.sessions.length) return null;
   return (
@@ -293,6 +348,19 @@ function StepsTab({ detail }: { detail: TaskDetail }) {
                   {spec?.title || st.id}
                 </span>
                 {spec?.skill && <span className="chip">{spec.skill}</span>}
+                {spec?.when && (
+                  <span className="chip" title={spec.when.command}>
+                    waits for {spec.when.description || "a precondition"}
+                  </span>
+                )}
+                {spec?.on_failure && (
+                  <span className="chip" title={`up to ${spec.on_failure.max_iterations} rounds`}>
+                    ↻ {spec.on_failure.goto}
+                    {st.iteration > 0
+                      ? ` · round ${st.iteration}/${spec.on_failure.max_iterations}`
+                      : ""}
+                  </span>
+                )}
                 <span
                   className="mono"
                   style={{
@@ -319,6 +387,11 @@ function StepsTab({ detail }: { detail: TaskDetail }) {
                   </span>
                 </span>
               </div>
+              {st.status === "waiting" && spec?.when && (
+                <div style={{ padding: "0 15px 12px" }}>
+                  <GateWait gate={spec.when} state={st.gate} />
+                </div>
+              )}
               {st.sessions.length > 0 && (
                 <div style={{ padding: "0 15px 12px", display: "flex", flexDirection: "column", gap: 7 }}>
                   <GenerationRail step={st} wall={wall} />

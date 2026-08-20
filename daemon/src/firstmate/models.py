@@ -16,10 +16,10 @@ from datetime import datetime, timezone
 
 TASK_STATUSES = {
     "scoping", "ready", "running", "blocked", "paused",
-    "validating", "done", "failed", "abandoned",
+    "waiting", "validating", "done", "failed", "abandoned",
 }
 TERMINAL_TASK_STATUSES = {"done", "failed", "abandoned"}
-STEP_STATUSES = {"pending", "running", "blocked", "done", "failed"}
+STEP_STATUSES = {"pending", "waiting", "running", "blocked", "done", "failed"}
 QUESTION_TYPES = {"clarification", "scope_change", "decision", "approval", "fyi"}
 URGENCIES = {"blocking", "normal"}
 
@@ -65,6 +65,62 @@ class Criterion:
 
 
 @dataclass
+class Gate:
+    """A precondition a step waits on before a worker is ever spawned
+    (PRD §6.2, waiting primitive).
+
+    The daemon runs `command` in the worktree on an interval; the step
+    stays parked — holding no worker slot and burning no tokens — until it
+    exits 0. This is how First Mate sits and waits on something slow and
+    external (a CI run, an AI reviewer, a deploy) without a live session
+    spending context on sleep loops.
+
+    `ceiling` bounds the total wait; hitting it escalates to the operator
+    rather than silently proceeding.
+    """
+
+    command: str
+    kind: str = "shell"
+    cwd: str = "."
+    interval: int = 60        # seconds between probes
+    ceiling: int = 3600       # give up (and escalate) after this long
+    timeout: int = 120        # per-probe timeout
+    description: str = ""     # human-readable "what we're waiting for"
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Gate":
+        return _from(cls, d)
+
+
+@dataclass
+class LoopBack:
+    """A loop edge: what to do when this step's criteria fail (PRD §6.2).
+
+    Convergence loops (fix → push → await review → fix again) are the
+    normal shape of review-driven work. Declaring the edge in the contract
+    lets the orchestrator iterate deterministically instead of escalating
+    an unsatisfiable criterion to the operator over and over.
+
+    Bounded two ways: `max_iterations` caps the rounds, and the
+    orchestrator additionally stops when a round makes no progress (same
+    failing evidence as last time), so a loop can never spin forever.
+    """
+
+    goto: str                 # step id to rewind to
+    max_iterations: int = 5
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LoopBack":
+        return _from(cls, d)
+
+
+@dataclass
 class StepSpec:
     """One skill execution within a task, as declared by the contract."""
 
@@ -75,13 +131,22 @@ class StepSpec:
     model: str | None = None
     allowed_tools: list[str] = field(default_factory=list)  # empty → defaults
     criteria: list[str] = field(default_factory=list)  # criterion ids
+    # Wait for this before spawning a worker (no slot, no tokens).
+    when: Gate | None = None
+    # Where to rewind when this step's criteria fail.
+    on_failure: LoopBack | None = None
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "StepSpec":
-        return _from(cls, d)
+        step = _from(cls, d)
+        if isinstance(step.when, dict):
+            step.when = Gate.from_dict(step.when)
+        if isinstance(step.on_failure, dict):
+            step.on_failure = LoopBack.from_dict(step.on_failure)
+        return step
 
 
 @dataclass
@@ -143,6 +208,20 @@ class Contract:
             crit = f" (criteria: {', '.join(s.criteria)})" if s.criteria else ""
             title = f" — {s.title}" if s.title else ""
             lines.append(f"{i}. **{s.id}**{title}{crit}")
+            if s.when:
+                what = s.when.description or s.when.command
+                lines.append(
+                    f"   _Gate: First Mate waits for {what} before this step "
+                    f"runs — the wait already happened, so do NOT poll or "
+                    f"sleep for it yourself._"
+                )
+            if s.on_failure:
+                lines.append(
+                    f"   _On criteria failure: First Mate loops back to step "
+                    f"'{s.on_failure.goto}' (up to "
+                    f"{s.on_failure.max_iterations} rounds) — new findings "
+                    f"are expected and handled by that loop, not by you._"
+                )
             lines.append(f"   {s.prompt}")
         lines += ["", "## Completion criteria (machine-checkable)", ""]
         for c in self.criteria:
@@ -219,6 +298,53 @@ def validate_contract(data: dict) -> list[str]:
         for cid in s.get("criteria") or []:
             if cid not in crit_ids:
                 errors.append(f"step '{sid}' references unknown criterion '{cid}'")
+        gate = s.get("when")
+        if gate is not None:
+            if not isinstance(gate, dict):
+                errors.append(f"step '{sid}': 'when' must be an object")
+            else:
+                if not str(gate.get("command", "")).strip():
+                    errors.append(
+                        f"step '{sid}': 'when' needs a command — a gate must be "
+                        f"machine-checkable"
+                    )
+                if gate.get("kind", "shell") != "shell":
+                    errors.append(
+                        f"step '{sid}': gate kind "
+                        f"'{gate.get('kind')}' not supported (shell only)"
+                    )
+                for key in ("interval", "ceiling", "timeout"):
+                    val = gate.get(key)
+                    if val is not None and (not isinstance(val, (int, float))
+                                            or isinstance(val, bool) or val <= 0):
+                        errors.append(
+                            f"step '{sid}': gate '{key}' must be a positive number")
+    # Loop edges are validated after every step id is known (forward and
+    # backward gotos are both legal).
+    for s in steps:
+        sid = str(s.get("id", "")).strip()
+        lb = s.get("on_failure")
+        if lb is None:
+            continue
+        if not isinstance(lb, dict):
+            errors.append(f"step '{sid}': 'on_failure' must be an object")
+            continue
+        goto = str(lb.get("goto", "")).strip()
+        if not goto:
+            errors.append(f"step '{sid}': 'on_failure' needs a 'goto' step id")
+        elif goto not in step_ids:
+            errors.append(
+                f"step '{sid}': on_failure.goto references unknown step '{goto}'")
+        if not s.get("criteria"):
+            errors.append(
+                f"step '{sid}': on_failure needs at least one criterion to "
+                f"fail on — otherwise the loop can never trigger"
+            )
+        mi = lb.get("max_iterations")
+        if mi is not None and (not isinstance(mi, int) or isinstance(mi, bool)
+                               or mi < 1):
+            errors.append(
+                f"step '{sid}': on_failure.max_iterations must be an integer >= 1")
     return errors
 
 
@@ -249,6 +375,25 @@ class SessionRecord:
 
 
 @dataclass
+class GateState:
+    """Persisted progress of a step's `when` gate, so a wait survives a
+    daemon restart instead of starting its ceiling over."""
+
+    first_probe_at: str = ""
+    last_probe_at: str = ""
+    probes: int = 0
+    last_exit: int | None = None
+    last_output: str = ""
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GateState":
+        return _from(cls, d)
+
+
+@dataclass
 class StepState:
     id: str
     status: str = "pending"
@@ -256,6 +401,12 @@ class StepState:
     generation: int = 0
     last_failure: str | None = None
     sessions: list[SessionRecord] = field(default_factory=list)
+    # Convergence-loop bookkeeping: how many times this step's on_failure
+    # edge has fired, and the failure signature of the last round (used to
+    # detect a loop that is making no progress).
+    iteration: int = 0
+    last_failure_signature: str = ""
+    gate: GateState | None = None
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -264,6 +415,8 @@ class StepState:
     def from_dict(cls, d: dict) -> "StepState":
         st = _from(cls, d)
         st.sessions = [SessionRecord.from_dict(s) for s in d.get("sessions") or []]
+        if isinstance(st.gate, dict):
+            st.gate = GateState.from_dict(st.gate)
         return st
 
 
@@ -323,6 +476,13 @@ class Question:
     answered_by: str | None = None
     asked_at: str = field(default_factory=now_iso)
     answered_at: str | None = None
+    # Identity of the *situation* being asked about, so an equivalent
+    # question later in the same task can reuse this answer instead of
+    # interrupting the operator again (PRD §6.5, question fingerprinting).
+    fingerprint: str = ""
+    # Set when this question was auto-answered from an earlier equivalent
+    # one: the id it inherited its answer from.
+    answered_from: str | None = None
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -330,3 +490,28 @@ class Question:
     @classmethod
     def from_dict(cls, d: dict) -> "Question":
         return _from(cls, d)
+
+
+def question_fingerprint(qtype: str, evidence: dict | None,
+                         question: str = "") -> str:
+    """Identify the situation a question is about.
+
+    Guard-raised questions are keyed on what the guard actually objected to
+    (tripwire + paths) rather than the agent's prose, because the same block
+    hit by three successive worker generations produces three differently
+    worded questions about one identical decision — which is exactly the
+    repetition that makes First Mate feel like it isn't listening.
+    """
+    import hashlib
+
+    ev = evidence or {}
+    tripwire = str(ev.get("tripwire") or "")
+    paths = sorted(str(p) for p in (ev.get("paths") or []))
+    if tripwire or paths:
+        key = f"{qtype}|{tripwire}|{'|'.join(paths)}"
+    else:
+        # No structured evidence: fall back to the normalized prose, which
+        # still catches a verbatim re-ask (e.g. the escalation ladder's own
+        # "failed validation twice" question).
+        key = f"{qtype}|" + " ".join(question.lower().split())
+    return hashlib.sha256(key.encode()).hexdigest()[:16]

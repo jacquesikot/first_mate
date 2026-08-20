@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
     "worker_model": "sonnet",
     "handoff_model": None,  # null → the step's worker model
     "scoping_model": None,  # null → the user's default claude model
+    "replan_model": None,
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,
@@ -270,13 +271,22 @@ class Store:
 
     @staticmethod
     def _apply_scope_widening(contract: Contract, q: Question, answer: str) -> None:
-        """Mechanical amendment semantics for guard-raised questions: an
-        'allow' answer to a scope_change/approval question widens exactly
-        what its evidence names — the guard picks the change up on the
-        next generation's guard.json (PRD §6.4)."""
+        """Mechanical amendment semantics for guard-raised questions.
+
+        An 'allow' answer widens exactly what the evidence names — the guard
+        picks the change up on the next generation's guard.json (PRD §6.4).
+
+        Anything else is a refusal, and a refusal has to *change something*
+        too. The step prompt is what sent the worker at the blocked action;
+        if the answer only lands in the amendment log, the next generation
+        reads the same instruction, hits the same block, and asks again. So a
+        non-allow answer is appended to the step's prompt as a binding
+        correction (decision log 2026-08-20).
+        """
         if q.type not in ("scope_change", "approval"):
             return
         if not answer.strip().lower().startswith(("allow", "yes")):
+            Store._apply_refusal(contract, q, answer)
             return
         paths = [str(p) for p in (q.evidence or {}).get("paths") or [] if str(p).strip()]
         tripwire = (q.evidence or {}).get("tripwire")
@@ -290,7 +300,35 @@ class Store:
             # disables it for the rest of this task.
             contract.tripwires[str(tripwire)] = False
 
+    @staticmethod
+    def _apply_refusal(contract: Contract, q: Question, answer: str) -> None:
+        """Fold a refused/redirected request into the step's own prompt, so
+        the instruction that caused the block no longer stands."""
+        step = next((sp for sp in contract.steps if sp.id == q.step_id), None)
+        if step is None:
+            return
+        paths = [str(p) for p in (q.evidence or {}).get("paths") or [] if str(p).strip()]
+        what = f" ({', '.join(paths)})" if paths else ""
+        note = (
+            f"\n\nOPERATOR CORRECTION (binding, supersedes anything above): "
+            f"you asked — \"{q.question.strip()}\"{what} — and the answer was: "
+            f"\"{answer.strip()}\". Do not attempt that action again, and do "
+            f"not re-ask: follow this instruction instead and complete the "
+            f"step without it."
+        )
+        if note.strip() not in step.prompt:
+            step.prompt = step.prompt.rstrip() + note
+
     # ------------------------------------------------- step artifacts
+
+    def save_task_artifact(self, task_id: str, filename: str, text: str) -> Path:
+        """A task-level artifact (a contract diff, a re-plan record). Lives
+        beside task.json so `cat`/`jq` still tell the whole story."""
+        d = self.task_dir(task_id)
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / filename
+        path.write_text(text if text.endswith("\n") else text + "\n")
+        return path
 
     def save_step_artifact(self, task_id: str, step_id: str, filename: str, text: str) -> Path:
         d = self.step_dir(task_id, step_id)

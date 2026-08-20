@@ -23,6 +23,12 @@ import shlex
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+# A worker's own bookkeeping (a plan it drafted, notes, a scratch report)
+# is a runtime concern, not a change to the operator's deliverable. It gets
+# a always-writable home inside the FM-owned dir so writing one never costs
+# the operator a question. Never committed: .fm/ is gitignored per worktree.
+SCRATCH_DIR = ".fm/artifacts"
+
 FILE_TOOLS = {
     "Edit": "file_path",
     "Write": "file_path",
@@ -42,13 +48,23 @@ DEFAULT_TRIPWIRES = {
 }
 KNOWN_TRIPWIRES = set(DEFAULT_TRIPWIRES)
 
+# Files that DECLARE dependencies — editing one is a real dependency change.
 DEP_MANIFEST_NAMES = {
-    "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
-    "bun.lockb", "bun.lock",
-    "requirements.txt", "pyproject.toml", "uv.lock", "setup.py", "setup.cfg",
-    "Pipfile", "Pipfile.lock", "poetry.lock",
-    "Gemfile", "Gemfile.lock", "go.mod", "go.sum",
-    "Cargo.toml", "Cargo.lock", "composer.json", "composer.lock",
+    "package.json",
+    "requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "Pipfile",
+    "Gemfile", "go.mod",
+    "Cargo.toml", "composer.json",
+}
+# Lockfiles are DERIVED. A bare `bun install`/`npm ci` in a fresh worktree
+# rewrites one as a side effect of populating node_modules while changing no
+# dependency at all — blocking that just interrupts the operator for
+# something they cannot meaningfully approve. So a lockfile write passes the
+# hook, and the orchestrator's step-boundary check is what catches a lockfile
+# that actually diverged (guard.LOCKFILE_NAMES / orchestrator._lockfile_drift).
+LOCKFILE_NAMES = {
+    "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock",
+    "uv.lock", "Pipfile.lock", "poetry.lock", "Gemfile.lock", "go.sum",
+    "Cargo.lock", "composer.lock",
 }
 MIGRATION_GLOBS = [
     "**/migrations/**", "**/migrate/**", "**/alembic/versions/**",
@@ -145,10 +161,17 @@ def check_path(config: dict, raw_path: str) -> GuardDecision:
         return blocked
     if rel is None:
         return ALLOW
+    if rel == SCRATCH_DIR or rel.startswith(SCRATCH_DIR + "/"):
+        # The worker's own scratch space — always allowed, never in scope
+        # questions, never committed.
+        return ALLOW
     if rel == ".fm" or rel.startswith(".fm/"):
         return _block(
             config, "fm_owned", path=rel,
-            detail=f"'{rel}' is First-Mate-owned orchestration state; never modify it.",
+            detail=(f"'{rel}' is First-Mate-owned orchestration state; never "
+                    f"modify it. If you need somewhere to write your own "
+                    f"notes or artifacts, use '{SCRATCH_DIR}/' — it is always "
+                    f"writable and needs no approval."),
         )
     scope_in = config.get("scope_in") or ["**"]
     scope_out = config.get("scope_out") or []
@@ -156,7 +179,10 @@ def check_path(config: dict, raw_path: str) -> GuardDecision:
         return _block(
             config, "out_of_scope", path=rel,
             detail=(f"'{rel}' is outside the contract's scope "
-                    f"(in: {scope_in}, out: {scope_out or '(none)'})."),
+                    f"(in: {scope_in}, out: {scope_out or '(none)'}). "
+                    f"If this is your own scratch artifact (notes, a draft, a "
+                    f"report) rather than part of the deliverable, write it "
+                    f"under '{SCRATCH_DIR}/' instead — that needs no approval."),
         )
     tripwires = _tripwires(config)
     allow = config.get("tripwire_allow") or []
@@ -219,8 +245,13 @@ def _dep_install_detail(tokens: list[str]) -> str | None:
         verbs = {"add", "remove", "uninstall", "rm", "link"}
         if any(a in verbs for a in args[:2]):
             return f"{name} {' '.join(rest)}"
-        # bare `npm install` / `npm ci` restores the lockfile — fine;
-        # `npm install <pkg>` changes the manifest.
+        # A bare restore of already-locked deps (`bun install`, `npm ci`,
+        # `pnpm install --frozen-lockfile`) changes no dependency — it just
+        # populates node_modules, which every test/build/lint step needs in a
+        # fresh worktree. Asking the operator to approve that is noise, so it
+        # passes; the post-step lockfile check is what actually enforces
+        # "nothing was added" (orchestrator._lockfile_tripwire).
+        # `npm install <pkg>` DOES change the manifest and still trips.
         if args[:1] in (["install"], ["i"]) and len(args) > 1:
             return f"{name} {' '.join(rest)}"
         return None

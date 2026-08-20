@@ -17,12 +17,12 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import scoping_api
+from . import replan, scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
     Contract, Question, QUESTION_TYPES, TERMINAL_TASK_STATUSES, Task,
-    StepState, new_id, now_iso, validate_contract,
+    StepState, new_id, now_iso, question_fingerprint, validate_contract,
 )
 from .orchestrator import TaskRunner
 from .store import Store
@@ -207,7 +207,7 @@ class Manager:
                     chat.status = "awaiting_operator"
                     chat.save()
                 continue
-            if task.status not in ("running", "validating"):
+            if task.status not in ("running", "validating", "waiting"):
                 continue
             for st in task.steps:
                 for rec in st.sessions:
@@ -225,6 +225,154 @@ class Manager:
             self._live_task.cancel()
         for loop in list(self._loops.values()):
             loop.cancel()
+
+
+# ------------------------------------- answering a blocking escalation
+
+# Structured actions an escalation can offer. Handled in plain code — no
+# LLM, no ambiguity — so the common cases are deterministic.
+STRUCTURED_ANSWERS = {
+    "retry", "abandon", "loop again", "keep waiting",
+    "accept and continue", "run the step anyway", "allow", "deny",
+    "revert the lockfile",
+}
+
+
+def needs_replan(q: Question, answer: str) -> bool:
+    """True when the answer is the operator saying something in their own
+    words that no mechanical rule can express.
+
+    An answer matching one of the offered options (or a known structured
+    action) is handled deterministically. Anything else used to be recorded
+    and then ignored; now it goes to the re-planning decision point.
+    """
+    norm = " ".join(answer.lower().split())
+    if norm in STRUCTURED_ANSWERS:
+        return False
+    if norm in {" ".join(o.lower().split()) for o in q.options}:
+        return False
+    return q.type in ("decision", "approval", "clarification", "scope_change")
+
+
+def apply_structured_answer(store: Store, task: Task, q: Question,
+                            answer: str) -> str | None:
+    """Apply a structured escalation answer to runtime state. Returns the
+    action taken, or None when the answer isn't one of them."""
+    norm = " ".join(answer.lower().split())
+    if norm not in STRUCTURED_ANSWERS:
+        return None
+    step = next((st for st in task.steps if st.id == q.step_id), None)
+    if step is None:
+        return None
+    if norm == "accept and continue":
+        # The operator judges the remaining failure acceptable: the step
+        # stands as done and the task moves on. The criterion stays in the
+        # contract — the amendment log records that it was waived here.
+        step.status = "done"
+        step.last_failure = None
+        store.save_task(task)
+        return "accepted step despite failing criteria"
+    if norm in ("loop again", "keep waiting"):
+        # Give the loop / the wait another full allowance.
+        step.status = "pending"
+        step.attempt = 1
+        step.iteration = 0
+        step.last_failure_signature = ""
+        step.gate = None
+        store.save_task(task)
+        return "reset the loop/wait allowance"
+    if norm == "run the step anyway":
+        # Skip the gate for this step and just run it.
+        contract = store.load_contract(task.id)
+        if contract is not None:
+            for sp in contract.steps:
+                if sp.id == q.step_id:
+                    sp.when = None
+            store.save_contract(task.id, contract)
+        step.status = "pending"
+        step.attempt = 1
+        step.gate = None
+        store.save_task(task)
+        return "dropped the gate and ran the step"
+    if norm == "retry":
+        step.status = "pending"
+        step.attempt = 1
+        store.save_task(task)
+        return "retry"
+    return None
+
+
+async def run_replan(store: Store, manager: "TaskManager", task: Task,
+                     q: Question, answer: str) -> dict:
+    """Turn a free-text answer into a contract edit (PRD §6.8).
+
+    The diff is persisted either way, so the operator can always see what
+    their words did — including when they did nothing.
+    """
+    contract = store.load_contract(task.id)
+    if contract is None:
+        return {"applied": False, "errors": ["task has no contract"]}
+    situation = q.question
+    evidence = q.evidence or {}
+    if evidence.get("failing"):
+        situation += "\n\nFailing checks:\n" + json.dumps(
+            evidence["failing"], indent=2)[:4000]
+    model = (manager.config.get("replan_model")
+             or manager.config.get("handoff_model")
+             or manager.config["worker_model"])
+    worktree = Path(task.worktree) if task.worktree else Path(task.repo)
+    result = await asyncio.to_thread(
+        replan.request_replan, worktree, contract, situation, answer, model)
+    if not result.ok:
+        store.save_task_artifact(
+            task.id, "replan-failed.md",
+            f"# Re-plan did not apply\n\nAnswer: {answer}\n\n"
+            f"Errors:\n" + "\n".join(f"- {e}" for e in result.errors)
+            + f"\n\nSummary: {result.summary}\n")
+        evt = store.append_event(task.id, "replan_failed", step_id=q.step_id,
+                                 data={"errors": result.errors,
+                                       "summary": result.summary})
+        await manager.broadcast(evt)
+        return {"applied": False, "errors": result.errors,
+                "summary": result.summary}
+
+    diff = replan.diff_contracts(contract, result.contract)
+    if not diff.strip():
+        evt = store.append_event(task.id, "replan_noop", step_id=q.step_id,
+                                 data={"summary": result.summary})
+        await manager.broadcast(evt)
+        return {"applied": False, "summary": result.summary,
+                "errors": ["the re-plan proposed no change"]}
+
+    # Keep the amendment trail: the previous contract stays readable on disk.
+    store.save_task_artifact(
+        task.id, f"contract-before-{q.id}.json",
+        json.dumps(contract.to_dict(), indent=2) + "\n")
+    store.save_task_artifact(task.id, f"replan-{q.id}.diff", diff + "\n")
+    result.contract.amendments = list(contract.amendments)
+    result.contract.amendments.append({
+        "at": now_iso(), "question_id": q.id, "question": q.question,
+        "answer": answer, "by": "replan",
+        "summary": result.summary, "diff_artifact": f"replan-{q.id}.diff",
+    })
+    store.save_contract(task.id, result.contract)
+    sync_step_state(task, result.contract)
+    store.save_task(task)
+    evt = store.append_event(task.id, "replan_applied", step_id=q.step_id,
+                             data={"summary": result.summary,
+                                   "question_id": q.id})
+    await manager.broadcast(evt)
+    return {"applied": True, "summary": result.summary, "diff": diff}
+
+
+def sync_step_state(task: Task, contract: Contract) -> None:
+    """Reconcile runtime step state with a re-planned contract: keep state
+    for surviving step ids, add fresh state for new ones, drop the rest."""
+    existing = {st.id: st for st in task.steps}
+    task.steps = [existing.get(sp.id) or StepState(id=sp.id)
+                  for sp in contract.steps]
+    if task.current_step and task.current_step not in {sp.id for sp in contract.steps}:
+        task.current_step = None
 
 
 def create_app(store: Store | None = None, autostart: bool = True,
@@ -949,6 +1097,7 @@ def create_app(store: Store | None = None, autostart: bool = True,
         await manager.broadcast(evt)
         task = store.load_task(q.task_id)
         resumed = False
+        replan: dict | None = None
         if task is not None and task.status == "blocked":
             if (q.type in ("decision", "approval") and answer.lower() == "abandon"
                     and "abandon" in [o.lower() for o in q.options]):
@@ -958,12 +1107,25 @@ def create_app(store: Store | None = None, autostart: bool = True,
                                          data={"status": "abandoned"})
                 await manager.broadcast(evt)
             else:
+                # Mechanical actions first (no LLM needed), then fall back to
+                # re-planning for anything said in the operator's own words.
+                acted = apply_structured_answer(store, task, q, answer)
+                if acted:
+                    evt = store.append_event(
+                        task.id, "answer_applied", step_id=q.step_id,
+                        data={"question_id": qid, "action": acted})
+                    await manager.broadcast(evt)
+                elif needs_replan(q, answer):
+                    replan = await run_replan(store, manager, task, q, answer)
                 still_open = [oq for oq in store.list_questions(task_id=task.id,
                                                                 status="open")
                               if oq.type != "fyi"]
                 if not still_open:
                     resumed = manager.start(task.id)
-        return {"question": q.to_dict(), "resumed": resumed}
+        out = {"question": q.to_dict(), "resumed": resumed}
+        if replan is not None:
+            out["replan"] = replan
+        return out
 
     # ------------------------------------------- worker/hook callbacks
 
@@ -991,6 +1153,43 @@ def create_app(store: Store | None = None, autostart: bool = True,
         )
         if not q.question:
             raise HTTPException(400, "question text is required")
+        q.fingerprint = question_fingerprint(qtype, q.evidence, q.question)
+
+        # Already decided? Reuse the answer instead of asking again. A worker
+        # generation has no memory of what a previous generation was told, so
+        # without this the operator gets asked the same thing once per
+        # generation — which is what made First Mate feel like it wasn't
+        # listening. The reuse is recorded, not silent.
+        if qtype != "fyi":
+            prior = next(
+                (p for p in reversed(store.list_questions(task_id=task_id,
+                                                          status="answered"))
+                 if p.fingerprint and p.fingerprint == q.fingerprint
+                 and p.answer),
+                None,
+            )
+            if prior is not None:
+                q.status = "answered"
+                q.answer = prior.answer
+                q.answered_by = f"auto (same decision as {prior.id})"
+                q.answered_at = now_iso()
+                q.answered_from = prior.id
+                store.save_question(q)
+                evt = store.append_event(
+                    task_id, "question_auto_answered", step_id=q.step_id,
+                    data={"question_id": q.id, "from": prior.id,
+                          "answer": prior.answer, "question": q.question})
+                await manager.broadcast(evt)
+                return {
+                    "status": "answered", "id": q.id, "answer": prior.answer,
+                    "message": (
+                        f"Already decided on this task: \"{prior.answer}\". "
+                        f"Do NOT stop — continue working with that as a binding "
+                        f"instruction. (If the answer does not actually resolve "
+                        f"your situation, explain what differs in a new "
+                        f"question rather than re-asking this one.)"),
+                }
+
         store.save_question(q)
         evt = store.append_event(task_id, "question_asked", step_id=q.step_id,
                                  data={"question_id": q.id, "type": qtype,

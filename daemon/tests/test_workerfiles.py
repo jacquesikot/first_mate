@@ -81,3 +81,33 @@ def test_write_worker_hooks_without_guard_omits_pretooluse(tmp_path):
     settings = write_worker_hooks(tmp_path, "t", "s", "http://x", "/bin/fm")
     data = json.loads(settings.read_text())
     assert "PreToolUse" not in data["hooks"]
+
+
+def test_scratch_dir_is_created_and_hidden_from_git(tmp_path):
+    """The worker's scratch space must exist before it's needed, and must
+    never surface in the operator's diff or a commit."""
+    import subprocess
+
+    from firstmate.exec import gitops
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True,
+                                    capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (repo / "README").write_text("x\n")
+    run("add", "-A")
+    run("commit", "-qm", "init")
+
+    write_worker_hooks(
+        repo, "t1", "s1", "http://x", "fm",
+        guard_config={"worktree": str(repo), "scope_in": ["**"]})
+
+    assert (repo / ".fm" / "artifacts").is_dir()
+    (repo / ".fm" / "artifacts" / "draft.md").write_text("notes")
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                            capture_output=True, text=True).stdout
+    assert status.strip() == "", f"scratch space leaked into git: {status!r}"
+    assert gitops.changed_files(repo) == []

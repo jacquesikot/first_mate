@@ -205,3 +205,51 @@ def test_validate_contract_tripwire_and_scope_fields():
     assert any("scope_in" in e for e in errs)
     errs = validate_contract({**base, "tripwires": "nope"})
     assert any("tripwires must be an object" in e for e in errs)
+
+
+# ------------------------------------------------- scratch space + lockfiles
+
+
+def test_scratch_dir_is_always_writable(tmp_path):
+    """A worker's own bookkeeping must never cost the operator a question."""
+    c = cfg(tmp_path, tripwires={"dependency_manifests": True})
+    for p in (".fm/artifacts/plan.md", ".fm/artifacts/nested/report.md",
+              ".fm/artifacts"):
+        assert check_path(c, p).allowed, p
+    # The rest of .fm/ is still First-Mate-owned.
+    blocked = check_path(c, ".fm/inject.md")
+    assert not blocked.allowed and blocked.code == "fm_owned"
+    # ...and the block tells the worker where it CAN write.
+    assert ".fm/artifacts" in blocked.message
+
+
+def test_out_of_scope_block_points_at_the_scratch_dir(tmp_path):
+    """The ENG-652 case: a repo-root artifact the worker invented itself."""
+    d = check_path(cfg(tmp_path), "ENG-652-PLAN.md")
+    assert not d.allowed and d.code == "out_of_scope"
+    assert ".fm/artifacts" in d.message
+
+
+def test_bare_dep_restore_is_allowed_but_real_changes_block(tmp_path):
+    c = cfg(tmp_path, tripwires={"dependency_manifests": True})
+    for cmd in ("bun install", "npm ci", "npm install",
+                "pnpm install --frozen-lockfile", "yarn install"):
+        assert check_bash(c, cmd).allowed, cmd
+    for cmd in ("bun add left-pad", "npm install react", "yarn add foo",
+                "uv add httpx", "cargo add serde"):
+        d = check_bash(c, cmd)
+        assert not d.allowed and d.tripwire == "dependency_manifests", cmd
+
+
+def test_lockfile_writes_pass_the_hook_but_manifests_do_not(tmp_path):
+    """A lockfile is derived — a bare install rewrites it while changing no
+    dependency, so the hook lets it through and the step-boundary check is
+    what catches real drift."""
+    c = cfg(tmp_path, scope_in=["**"], scope_out=[],
+            tripwires={"dependency_manifests": True})
+    assert check_path(c, "frontend/bun.lock").allowed
+    assert check_path(c, "package-lock.json").allowed
+    assert check_path(c, "uv.lock").allowed
+    d = check_path(c, "frontend/package.json")
+    assert not d.allowed and d.tripwire == "dependency_manifests"
+    assert not check_path(c, "pyproject.toml").allowed

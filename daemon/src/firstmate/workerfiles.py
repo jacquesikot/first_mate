@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -31,6 +32,35 @@ def write_inject(worktree: Path, text: str) -> Path:
     return path
 
 
+def _exclude_fm_dir(worktree: Path) -> None:
+    """Keep `.fm/` out of git without touching the repo's own .gitignore.
+
+    A worktree's private excludes live in its git dir, so this never edits
+    a tracked file and never shows up in the operator's diff.
+    """
+    try:
+        # `git status` reads info/exclude from the COMMON git dir, not the
+        # per-worktree one — `git rev-parse --git-common-dir` is what points
+        # at it (for a linked worktree that's the main repo's .git).
+        proc = subprocess.run(
+            ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True)
+        if proc.returncode != 0 or not proc.stdout.strip():
+            return
+        common = Path(proc.stdout.strip())
+        gitdir = common if common.is_absolute() else (worktree / common)
+        if not gitdir.exists():
+            return
+        info = gitdir / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        exclude = info / "exclude"
+        current = exclude.read_text() if exclude.exists() else ""
+        if ".fm/" not in current:
+            exclude.write_text(current.rstrip("\n") + "\n.fm/\n" if current else ".fm/\n")
+    except OSError:
+        return  # best effort; gitops already filters .fm/ from diffs
+
+
 def write_worker_hooks(worktree: Path, task_id: str, step_id: str,
                        daemon_url: str, fm_bin: str,
                        guard_config: dict | None = None) -> Path:
@@ -41,6 +71,10 @@ def write_worker_hooks(worktree: Path, task_id: str, step_id: str,
     fm_dir = worktree / ".fm"
     hooks_dir = fm_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
+    # The worker's own scratch space: always writable, never committed, so
+    # drafting a plan or a report never costs the operator an approval.
+    (fm_dir / guard.SCRATCH_DIR.split("/", 1)[1]).mkdir(exist_ok=True)
+    _exclude_fm_dir(worktree)
     fallback = fm_dir / "events-fallback.jsonl"
     inject = fm_dir / "inject.md"
     guard_json = fm_dir / "guard.json"
@@ -133,6 +167,7 @@ def build_inject(
     handoff: str | None = None,
     answered: list[Question] | None = None,
     retry_note: str | None = None,
+    loop_note: str | None = None,
 ) -> str:
     parts = [
         f"# First Mate — injected context (step '{step.id}', "
@@ -151,6 +186,11 @@ def build_inject(
             parts.append(f"  A: {q.answer}")
     if handoff:
         parts += ["", "## Handoff from the previous session generation", "", handoff.rstrip()]
+    if loop_note:
+        parts += [
+            "", "## Why you are running again (convergence loop)", "",
+            loop_note.rstrip(),
+        ]
     if retry_note:
         parts += [
             "", "## Previous attempt failed validation", "", retry_note.rstrip(), "",

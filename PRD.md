@@ -101,8 +101,10 @@ Multi-stage work (plan → implement → review, research pipelines, transcripti
 - LLM calls occur only at fixed decision points — task decomposition, handoff summarization, learning extraction, and optional judgment calls (e.g. "does this diff satisfy criterion 3?") — each as a fresh, stateless, schema-constrained headless invocation. The loop itself is code.
 - Multiple tasks run concurrently; a global concurrency cap (configurable) limits simultaneous worker sessions to respect rate limits and machine load. Blocked tasks consume no worker slots.
 - Steps may declare dependencies; independent steps within a task may parallelize (post-v1 acceptable; sequential is fine for v1).
-- Failure ladder: validation failure → one retry with the failure as context → second failure escalates to a `decision` question with diff and failing check attached. Never a third autonomous attempt.
+- Failure ladder: validation failure → one retry with the failure as context → a declared loop edge (below) rewinds and iterates → otherwise escalates to a `decision` question with diff and failing check attached. Never a third autonomous attempt at the same thing.
 - Every step's worker gets a tool allowlist appropriate to its skill (review = read-only; implement = scoped writes). Defaults per skill, overridable in the contract.
+- **Waiting (gates).** A step may declare a `when` gate: a machine-checkable shell probe that must pass before a worker is spawned. While it is red the task sits in `waiting` — no session, no tokens, no worker slot — and the daemon re-probes on the gate's interval. Gate progress is persisted, so a daemon restart resumes the same wait rather than granting a fresh ceiling; exceeding `ceiling` escalates. This is what lets First Mate sit out something slow and external (an AI reviewer, CI, a deploy) instead of spending a session's context on a sleep loop. Step prompts must never poll or sleep for minutes; that is what gates replace.
+- **Iterating (loop edges).** A step may declare `on_failure: {goto, max_iterations}`. When its criteria fail, the orchestrator rewinds to the named step and re-runs everything from there — so a fix is genuinely re-made, re-pushed and re-verified. Convergence work (fix → push → re-review → fix) is therefore expressed in the contract and runs autonomously. Two independent brakes: `max_iterations`, and a no-progress check that stops the loop when a round fails with the same evidence as the last one. The step it rewinds to is told why, with the failing evidence attached.
 
 ### 6.3 Context management (the relay)
 
@@ -116,6 +118,8 @@ Multi-stage work (plan → implement → review, research pipelines, transcripti
 
 - The contract's in-scope path globs compile to a pre-tool-use guard hook installed in the worktree: edits/writes outside scope are mechanically blocked before execution, with an in-band message telling the agent to raise a `scope_change` question instead.
 - Additional tripwires, each producing a question rather than a surprise: dependency manifest changes, new/modified migrations, pushes to remotes, deletions above a threshold, total diff size above a threshold. All configurable per project.
+- **Scratch space.** Workers may always write under `.fm/artifacts/` — no approval, no scope entry, excluded from git via the worktree's private excludes so it can never reach a diff or a commit. A worker's own bookkeeping (a draft it wrote, notes, a generated report) is a runtime concern, not a change to the operator's deliverable, and must never cost an interruption. Out-of-scope blocks name this directory as the alternative.
+- **Manifests vs. lockfiles.** Editing a file that *declares* dependencies (`package.json`, `pyproject.toml`, …) trips the tripwire. A *derived* lockfile does not: a bare `bun install` / `npm ci` in a fresh worktree rewrites one purely as a side effect of populating `node_modules`, which is not something the operator can meaningfully approve. The guarantee "no dependency actually changed" is enforced instead at the step boundary, where a lockfile appearing in the diff raises the question once.
 
 ### 6.5 Question queue & human-in-the-loop
 
@@ -123,6 +127,8 @@ Multi-stage work (plan → implement → review, research pipelines, transcripti
 - Two modes: **park** (default — question queued, session hands off and is torn down, task marked `blocked`, orchestrator moves on to other work; answer triggers respawn with the answer in context) and **block-with-timeout** (session stays alive polling for quick approvals; falls back to park on timeout).
 - Batching rule: non-blocking questions accumulate and surface together at step boundaries; only `blocking` urgency pages me immediately. Skill guidance instructs workers to proceed on defensible assumptions recorded as `fyi` rather than blocking on trivia.
 - Answers are recorded with attribution and timestamp, appended to the contract, and fingerprinted: a question recurring across tasks prompts a one-time "promote to project memory?" suggestion.
+- **An answer must always change something mechanically**, or the next worker generation walks into the identical wall and asks again. Three paths, in order: (a) an `allow` widens exactly what the question's evidence names; (b) a refusal or redirect is appended to the offending step's prompt as a binding correction, so the instruction that caused the block no longer stands; (c) anything else the operator says in their own words goes to a **re-planning** decision point (§6.2's LLM call list) which rewrites steps/criteria/scope to express it. A re-plan may not touch `goal` or `repo`, must pass the same `validate_contract` gate as a freshly scoped contract, may not make a criterion trivially true, and persists the before-contract plus a unified diff as task artifacts so the operator can audit exactly what their words did.
+- **Fingerprinting also suppresses re-asks within a task.** Guard-raised questions are keyed on the situation (tripwire + paths), not the agent's prose, because one block hit by three successive generations yields three differently worded questions about one identical decision. An equivalent question is auto-answered from the earlier one and the worker is told to continue rather than stop; the reuse is recorded as an event, never silent.
 - Every question is answerable from all three clients identically: dashboard inbox, Slack message action/reply, `fm answer <id> <choice>`.
 
 ### 6.6 Memory
@@ -140,7 +146,7 @@ Multi-stage work (plan → implement → review, research pipelines, transcripti
 
 ### 6.8 Web dashboard
 
-Served by the daemon at `localhost:<port>`; opens automatically with `fm serve --open`. Visual direction: near-monochrome dark theme with a single amber accent reserved for attention (needs-input alerts, active selection), status carried by glyphs (`●` running, `◐` waiting, `✓` done, `✗` failed), fixed-column metrics, filenames prominent with directories de-emphasised, desaturated diff colors.
+Served by the daemon at `localhost:<port>`; opens automatically with `fm serve --open`. Visual direction: near-monochrome dark theme with a single amber accent reserved for attention (needs-input alerts, active selection), status carried by glyphs (`●` running, `◔` waiting on a gate, `◐` blocked, `✓` done, `✗` failed), fixed-column metrics, filenames prominent with directories de-emphasised, desaturated diff colors.
 
 Views:
 - **Task board** — all tasks by lifecycle state; each card shows current step, generation, context meter of the live session, and pending-question count. Global header carries the attention counter ("2 need input").

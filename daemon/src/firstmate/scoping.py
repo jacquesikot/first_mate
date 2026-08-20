@@ -38,10 +38,25 @@ CONTRACT_SCHEMA_EXAMPLE = """\
       "skill": null,
       "allowed_tools": ["Read", "Glob", "Grep", "Edit", "Write", "Bash(npm test:*)"],
       "criteria": ["tests"]
+    },
+    {
+      "id": "verify",
+      "title": "wait for CI, then report",
+      "prompt": "instructions — note the wait already happened before this runs",
+      "allowed_tools": ["Read", "Bash(gh pr checks:*)"],
+      "criteria": ["ci_green"],
+      "when": {
+        "command": "test \"$(gh pr checks 42 --json state --jq '[.[]|select(.state==\"PENDING\" or .state==\"IN_PROGRESS\")]|length')\" = 0",
+        "description": "CI to finish",
+        "interval": 60,
+        "ceiling": 3600
+      },
+      "on_failure": {"goto": "implement", "max_iterations": 5}
     }
   ],
   "criteria": [
-    {"id": "tests", "command": "npm test", "cwd": ".", "timeout": 600}
+    {"id": "tests", "command": "npm test", "cwd": ".", "timeout": 600},
+    {"id": "ci_green", "command": "gh pr checks 42", "cwd": ".", "timeout": 300}
   ]
 }"""
 
@@ -85,6 +100,46 @@ in the contract: dependency-manifest changes, migrations, git push, \
 large diffs. If the task inherently needs one (e.g. adding a dependency), \
 say so and set it in the contract, e.g. "tripwires": {{"dependency_manifests": false}} \
 or widen nothing and let the worker ask at run time.
+8. A worker may always write its own scratch artifacts (drafts, notes, a \
+report it generated) under `.fm/artifacts/` with no approval and no scope \
+entry. If a step needs to produce a working file that is not part of the \
+deliverable, put it there — do NOT add it to scope_in, and do NOT invent a \
+repo-root file for it.
+
+## Waiting and iterating — use the contract, not the step prompt
+
+First Mate can wait, and it can loop. Both are declared structurally, and \
+you should reach for them rather than working around them:
+
+- **Waiting on something slow and external** (an AI reviewer, CI, a deploy, \
+a queue): give the step a `when` gate. First Mate polls that command \
+itself, on its own interval, while the task holds no session open — so \
+waiting 20 minutes costs nothing and cannot run out of context. NEVER \
+write a step prompt that tells a worker to sleep in a bash loop or poll for \
+minutes: that burns the session's context on waiting and is the one thing \
+gates exist to replace. Set `ceiling` generously (the operator is asked \
+only if it is exceeded).
+- **Iterating until something is clean** ("fix what the review finds, then \
+re-review, until it passes"): give the verifying step an `on_failure` loop \
+edge pointing back at the step that does the work. When the verifying \
+step's criteria fail, First Mate re-runs everything from the target step \
+onward — so the fix is re-made, re-pushed and re-verified automatically. \
+It stops on its own if the rounds stop making progress or `max_iterations` \
+is hit.
+
+So for a goal like "fix the review findings and keep going until the PR is \
+green": do NOT propose a single pass, and do NOT ask the operator to choose \
+between a single pass and a polling loop. Express it as fix → push → \
+(gate: wait for the reviewer) verify, with `on_failure` from verify back to \
+fix. That IS the loop. Only ask the operator about things that genuinely \
+change the outcome of their work (which findings count, whether to \
+force-push, what "green" means) — never about the mechanics of waiting or \
+iterating.
+
+A criterion on a looping step should assert the END state you actually \
+want ("zero unresolved findings on the current head"), because failing it \
+is what drives another round. That is a feature, not a problem to design \
+around.
 
 ## Finalizing
 
