@@ -11,13 +11,14 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cleanup, learning, replan, scoping_api
+from . import cleanup, guard, learning, replan, scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
@@ -29,6 +30,37 @@ from .store import Store
 
 LIVE_POLL_SECONDS = 1.0  # pane-capture/context push cadence (PRD: <1s felt)
 PANE_TAIL_LINES = 160
+# Artifacts are read into the browser whole, so cap what we will inline.
+ARTIFACT_MAX_BYTES = 512 * 1024
+ARTIFACT_TEXT_SUFFIXES = frozenset({
+    ".md", ".txt", ".json", ".yaml", ".yml", ".toml", ".csv", ".log",
+    ".diff", ".patch", ".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".sql",
+    ".html", ".css", ".xml", ".ini", ".cfg", "",
+})
+
+
+def _scan_artifacts(root: Path) -> list[dict]:
+    """Every file under the worker's scratch dir, newest first."""
+    out: list[dict] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        rel = p.relative_to(root).as_posix()
+        out.append({
+            "path": rel,
+            "bytes": st.st_size,
+            "modified": datetime.fromtimestamp(
+                st.st_mtime, tz=timezone.utc).isoformat(),
+            # Only text is rendered inline; the rest is listed but not opened.
+            "text": p.suffix.lower() in ARTIFACT_TEXT_SUFFIXES,
+        })
+    out.sort(key=lambda f: f["modified"], reverse=True)
+    return out
+
 
 
 def dashboard_dist() -> Path | None:
@@ -717,6 +749,51 @@ def create_app(store: Store | None = None, autostart: bool = True,
         except gitops.GitError as e:
             raise HTTPException(500, f"git error: {e}")
         return {"path": path, "diff": text}
+
+    @app.get("/tasks/{task_id}/artifacts")
+    async def task_artifacts(task_id: str):
+        """What the worker produced that is NOT a repo change.
+
+        `.fm/artifacts/` is the worker's always-writable scratch space, and
+        for a step whose deliverable isn't code (a plan, a report) the file
+        in there *is* the work. It is deliberately git-excluded and
+        filtered out of the diff, so without this it was unreadable from
+        the dashboard (STATUS 2026-08-20).
+        """
+        task = get_task_or_404(task_id)
+        if not task.worktree:
+            return {"files": [], "worktree": None}
+        root = Path(task.worktree) / guard.SCRATCH_DIR
+        if not root.is_dir():
+            return {"files": [], "worktree": task.worktree}
+        files = await asyncio.to_thread(_scan_artifacts, root)
+        return {"files": files, "worktree": task.worktree}
+
+    @app.get("/tasks/{task_id}/artifacts/file")
+    async def task_artifact_file(task_id: str, path: str):
+        task = get_task_or_404(task_id)
+        if not task.worktree:
+            raise HTTPException(404, "task has no worktree")
+        root = (Path(task.worktree) / guard.SCRATCH_DIR).resolve()
+        try:
+            target = (root / path).resolve()
+            # `path` comes from the client: keep it inside the scratch dir.
+            target.relative_to(root)
+        except (ValueError, OSError):
+            raise HTTPException(400, "path escapes the artifacts directory")
+        if not target.is_file():
+            raise HTTPException(404, f"no such artifact: {path}")
+        size = target.stat().st_size
+        if size > ARTIFACT_MAX_BYTES:
+            return {"path": path, "text": None, "size": size,
+                    "truncated": True,
+                    "reason": f"file is {size} bytes; too large to display"}
+        try:
+            text = await asyncio.to_thread(
+                target.read_text, encoding="utf-8", errors="replace")
+        except OSError as e:
+            raise HTTPException(500, f"could not read artifact: {e}")
+        return {"path": path, "text": text, "size": size, "truncated": False}
 
     @app.get("/tasks/{task_id}/output")
     async def task_output(task_id: str):

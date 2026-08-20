@@ -69,6 +69,33 @@ export interface Question {
   answered_from: string | null;
 }
 
+/**
+ * A file the worker wrote under `.fm/artifacts/` — its scratch space. For
+ * a step whose deliverable isn't code (a plan, a report) this IS the work
+ * product, but `.fm/` is git-excluded and filtered from the diff, so it
+ * needs its own surface.
+ */
+export interface ArtifactFile {
+  path: string;
+  bytes: number;
+  modified: string;
+  /** Whether the daemon will render it inline. */
+  text: boolean;
+}
+
+export interface ArtifactList {
+  files: ArtifactFile[];
+  worktree: string | null;
+}
+
+export interface ArtifactBody {
+  path: string;
+  text: string | null;
+  size: number;
+  truncated: boolean;
+  reason?: string;
+}
+
 /** Result of turning a free-text answer into a contract edit. */
 export interface ReplanOutcome {
   applied: boolean;
@@ -423,6 +450,13 @@ export const api = {
     req<{ path: string; diff: string }>(
       "GET",
       `/tasks/${id}/diff/file?path=${encodeURIComponent(path)}`
+    ),
+  artifacts: (id: string) =>
+    req<ArtifactList>("GET", `/tasks/${id}/artifacts`),
+  artifactFile: (id: string, path: string) =>
+    req<ArtifactBody>(
+      "GET",
+      `/tasks/${id}/artifacts/file?path=${encodeURIComponent(path)}`
     ),
   output: (id: string) =>
     req<{ live: boolean; output: string | null; context: ContextInfo | null }>(

@@ -703,3 +703,122 @@ def test_plain_question_still_answers_flatly(client):
     r = client.post(f"/questions/{qid}/answer", json={"answer": "red"})
     assert r.status_code == 200 and r.json()["question"]["answer"] == "red"
     assert r.json()["question"]["questions"] == []
+
+
+# ---- worker artifacts: the deliverable when it isn't code (STATUS 2026-08-20) ----
+
+
+def artifact_task(client) -> str:
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    task = client.store.load_task(tid)
+    task.worktree = client.repo
+    client.store.save_task(task)
+    return tid
+
+
+def test_artifacts_empty_when_none_written(client):
+    tid = artifact_task(client)
+    r = client.get(f"/tasks/{tid}/artifacts")
+    assert r.status_code == 200 and r.json()["files"] == []
+
+
+def test_artifacts_lists_newest_first_with_sizes(client):
+    import os
+    import time
+
+    tid = artifact_task(client)
+    root = Path(client.repo) / ".fm" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "round1.json").write_text('{"a": 1}')
+    (root / "plan-draft.md").write_text("# Plan\n\nBody.\n")
+    # make the draft newer regardless of filesystem timestamp granularity
+    now = time.time()
+    os.utime(root / "round1.json", (now - 60, now - 60))
+    os.utime(root / "plan-draft.md", (now, now))
+
+    files = client.get(f"/tasks/{tid}/artifacts").json()["files"]
+    assert [f["path"] for f in files] == ["plan-draft.md", "round1.json"]
+    assert files[0]["bytes"] == len("# Plan\n\nBody.\n")
+    assert files[0]["text"] is True
+    assert files[0]["modified"]
+
+
+def test_artifacts_reads_a_file_back(client):
+    tid = artifact_task(client)
+    root = Path(client.repo) / ".fm" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "plan-draft.md").write_text("## Implementation Plan\n")
+    r = client.get(f"/tasks/{tid}/artifacts/file",
+                   params={"path": "plan-draft.md"})
+    assert r.status_code == 200
+    assert r.json()["text"] == "## Implementation Plan\n"
+    assert r.json()["truncated"] is False
+
+
+def test_artifacts_finds_nested_files(client):
+    tid = artifact_task(client)
+    nested = Path(client.repo) / ".fm" / "artifacts" / "reports"
+    nested.mkdir(parents=True)
+    (nested / "audit.md").write_text("x")
+    files = client.get(f"/tasks/{tid}/artifacts").json()["files"]
+    assert [f["path"] for f in files] == ["reports/audit.md"]
+    assert client.get(f"/tasks/{tid}/artifacts/file",
+                      params={"path": "reports/audit.md"}).status_code == 200
+
+
+def test_artifacts_refuses_to_escape_the_scratch_dir(client):
+    """`path` comes from the browser — it must not reach First Mate's own
+    orchestration state, let alone the rest of the disk."""
+    tid = artifact_task(client)
+    (Path(client.repo) / ".fm" / "artifacts").mkdir(parents=True)
+    (Path(client.repo) / ".fm" / "settings.json").write_text("{}")
+    for bad in ["../settings.json", "../../../../etc/passwd",
+                "reports/../../settings.json"]:
+        r = client.get(f"/tasks/{tid}/artifacts/file", params={"path": bad})
+        assert r.status_code == 400, bad
+
+
+def test_artifacts_missing_file_is_404(client):
+    tid = artifact_task(client)
+    (Path(client.repo) / ".fm" / "artifacts").mkdir(parents=True)
+    assert client.get(f"/tasks/{tid}/artifacts/file",
+                      params={"path": "nope.md"}).status_code == 404
+
+
+def test_artifacts_declines_to_inline_something_huge(client):
+    from firstmate import server
+
+    tid = artifact_task(client)
+    root = Path(client.repo) / ".fm" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "big.log").write_text("x" * (server.ARTIFACT_MAX_BYTES + 1))
+    body = client.get(f"/tasks/{tid}/artifacts/file",
+                      params={"path": "big.log"}).json()
+    assert body["truncated"] is True and body["text"] is None
+    assert "too large" in body["reason"]
+
+
+def test_artifacts_stay_out_of_the_diff(client):
+    """They are not repo changes and must not read as pending commits."""
+    import subprocess
+
+    tid = artifact_task(client)
+    repo = Path(client.repo)
+    run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True,
+                                    capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (repo / "README").write_text("x\n")
+    run("add", "-A")
+    run("commit", "-qm", "init")
+    root = repo / ".fm" / "artifacts"
+    root.mkdir(parents=True)
+    (root / "plan-draft.md").write_text("# Plan\n")
+    # a real repo change, so we know the diff isn't just empty
+    (repo / "src.py").write_text("print(1)\n")
+
+    body = client.get(f"/tasks/{tid}/diff").json()
+    paths = [f["path"] for f in body["files"]]
+    assert "src.py" in paths, "a genuine change must still show"
+    assert not any(p.startswith(".fm") for p in paths), paths

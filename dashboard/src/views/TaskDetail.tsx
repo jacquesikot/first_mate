@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
-  DiffInfo, TaskDetail, StepState, CriterionResult, LivePayload, Gate, GateState,
-  CleanupCandidate, Task,
+  ArtifactFile, DiffInfo, TaskDetail, StepState, CriterionResult, LivePayload,
+  Gate, GateState, CleanupCandidate, Task,
 } from "../api";
 import { api, socket } from "../api";
 import {
@@ -16,13 +16,24 @@ import { ago, splitPath, statusColor, tokens } from "../format";
 import { Markdown } from "../markdown";
 import { ScopingPanel } from "./Scoping";
 
-type Tab = "scoping" | "steps" | "contract" | "changes" | "output" | "questions";
+type Tab =
+  | "scoping"
+  | "steps"
+  | "contract"
+  | "changes"
+  | "artifacts"
+  | "output"
+  | "questions";
 
 export function TaskDetailView({ taskId }: { taskId: string }) {
   const { live, toast, refresh, go } = useApp();
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab | null>(null);
+  // Badge only — the tab body fetches its own detail. Kept here so the
+  // count is visible without opening the tab: a planning task's whole
+  // deliverable can live in there.
+  const [artifactCount, setArtifactCount] = useState(0);
   const timer = useRef<number | null>(null);
 
   const load = useCallback(() => {
@@ -33,6 +44,10 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
         setError(null);
       })
       .catch((e) => setError(String(e)));
+    api
+      .artifacts(taskId)
+      .then((a) => setArtifactCount(a.files.length))
+      .catch(() => setArtifactCount(0));
   }, [taskId]);
 
   useEffect(() => {
@@ -94,6 +109,7 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
         ["steps", "Steps", String(task.steps.length)],
         ["contract", "Contract", contract?.criteria.length ? String(contract.criteria.length) : ""],
         ["changes", "Changes", ""],
+        ["artifacts", "Artifacts", artifactCount ? String(artifactCount) : ""],
         ["output", "Output", lv ? "live" : ""],
         ["questions", "Questions", String(questions.length)],
       ];
@@ -179,6 +195,7 @@ export function TaskDetailView({ taskId }: { taskId: string }) {
           {active === "steps" && <StepsTab detail={detail} />}
           {active === "contract" && <ContractTab detail={detail} onSaved={load} />}
           {active === "changes" && <ChangesTab taskId={taskId} />}
+          {active === "artifacts" && <ArtifactsTab taskId={taskId} />}
           {active === "output" && <OutputTab detail={detail} lv={lv} />}
           {active === "questions" && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1004,6 +1021,199 @@ function DiffLines({ text }: { text: string }) {
 }
 
 // ----------------------------------------------------------------- output
+
+/**
+ * What the worker produced that isn't a repo change.
+ *
+ * `.fm/artifacts/` is the worker's always-writable scratch space, and for
+ * a step whose deliverable isn't code — a plan, a report — the file in
+ * there IS the work. It is git-excluded and filtered out of the diff, so
+ * before this tab existed there was no way to read it from the dashboard
+ * (STATUS 2026-08-20).
+ */
+function artifactSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ArtifactsTab({ taskId }: { taskId: string }) {
+  const [files, setFiles] = useState<ArtifactFile[] | null>(null);
+  const [worktree, setWorktree] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [body, setBody] = useState<string>("");
+  const [raw, setRaw] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .artifacts(taskId)
+      .then((d) => {
+        setFiles(d.files);
+        setWorktree(d.worktree);
+        setSelected((cur) => cur ?? (d.files.length ? d.files[0].path : null));
+      })
+      .catch((e) => setError(String(e)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskId]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setBody("");
+    api
+      .artifactFile(taskId, selected)
+      .then((d) =>
+        setBody(d.text ?? `(${d.reason ?? "not shown"} — ${artifactSize(d.size)})`)
+      )
+      .catch((e) => setBody(`(unavailable: ${e})`));
+  }, [taskId, selected]);
+
+  if (error) return <div className="empty">{error}</div>;
+  if (!files) return <div className="dim">loading…</div>;
+  if (!files.length)
+    return (
+      <div className="empty">
+        No artifacts yet. Workers write drafts, reports and notes to{" "}
+        <span className="mono">.fm/artifacts/</span> — they are never committed,
+        so they do not appear under Changes.
+      </div>
+    );
+
+  const current = files.find((f) => f.path === selected);
+  const isMarkdown = !!selected && /\.(md|markdown)$/i.test(selected);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div
+        className="mono"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 16,
+          flexWrap: "wrap",
+          padding: "11px 15px",
+          borderRadius: "var(--rad)",
+          border: "1px solid var(--bd)",
+          background: "var(--s2)",
+          fontSize: 11.5,
+        }}
+      >
+        <span style={{ color: "var(--tx3)" }}>
+          {files.length} artifact{files.length > 1 ? "s" : ""}
+        </span>
+        <span style={{ color: "var(--tx4)" }}>not committed · not in the diff</span>
+        {worktree && (
+          <span style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+            <span className="truncate" style={{ color: "var(--tx4)", maxWidth: 340 }}>
+              {worktree}/.fm/artifacts
+            </span>
+            <CopyButton text={`${worktree}/.fm/artifacts`} />
+          </span>
+        )}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start" }}>
+        <div
+          className="card-flat"
+          style={{ flex: "1 1 240px", minWidth: 0, maxHeight: "70vh", overflowY: "auto" }}
+        >
+          {files.map((f) => {
+            const { dir, name } = splitPath(f.path);
+            return (
+              <button
+                key={f.path}
+                className="row-btn"
+                style={{
+                  minWidth: 0,
+                  maxWidth: "100%",
+                  padding: "10px 12px",
+                  borderBottom: "1px solid var(--bd)",
+                  background: selected === f.path ? "var(--s3)" : "transparent",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                }}
+                onClick={() => setSelected(f.path)}
+                title={f.path}
+              >
+                <div style={{ display: "flex", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+                  {dir && (
+                    <span
+                      className="mono truncate"
+                      style={{ fontSize: 11, color: "var(--tx4)", maxWidth: "100%" }}
+                    >
+                      {dir}
+                    </span>
+                  )}
+                  <span
+                    className="mono"
+                    style={{ fontSize: 12, fontWeight: 500, overflowWrap: "anywhere" }}
+                  >
+                    {name}
+                  </span>
+                </div>
+                <div
+                  className="mono"
+                  style={{ display: "flex", gap: 10, fontSize: 10.5, color: "var(--tx4)" }}
+                >
+                  <span>{artifactSize(f.bytes)}</span>
+                  <span>{ago(f.modified)} ago</span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ flex: "3 1 420px", minWidth: 0 }}>
+          {current && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                marginBottom: 8,
+                flexWrap: "wrap",
+              }}
+            >
+              <span className="mono" style={{ fontSize: 11.5, color: "var(--tx3)" }}>
+                {current.path}
+              </span>
+              {isMarkdown && (
+                <button
+                  className="mono dim"
+                  style={{ fontSize: 10.5, borderBottom: "1px dotted var(--bd3)" }}
+                  onClick={() => setRaw(!raw)}
+                >
+                  {raw ? "rendered" : "raw"}
+                </button>
+              )}
+              {body && <CopyButton text={body} />}
+            </div>
+          )}
+          {isMarkdown && !raw ? (
+            <div
+              className="card-flat"
+              style={{ padding: "14px 16px", maxHeight: "70vh", overflowY: "auto" }}
+            >
+              <Markdown text={body} />
+            </div>
+          ) : (
+            <pre
+              className="terminal"
+              style={{
+                padding: "12px 14px",
+                maxHeight: "70vh",
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
+              }}
+            >
+              {body}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function OutputTab({ detail, lv }: { detail: TaskDetail; lv?: LivePayload }) {
   const [fallback, setFallback] = useState<string | null>(null);
