@@ -3,21 +3,87 @@
 > Living hand-off log. Every session reads this first and updates it before ending.
 > Protocol: see `CLAUDE.md`. Spec: see `PRD.md`.
 
-**Current phase:** Phase 3 closed; **autonomy hardening + gate supervision done (2026-08-20)** on Jacques's first two real tasks — First Mate can now *wait* (gates), *iterate* (loop edges), and *re-plan itself from an answer*, and it stops re-asking settled questions. 192 daemon tests + 13 dashboard tests pass; **all four smoke scenarios pass live with real workers** — `phase3` parks on a gate and converges through a loop, `phase4` has the supervisor diagnose and repair a gate that could never open, both with zero blocking questions. Next: Phase 4 — Slack + memory loop.
+**Current phase:** Phase 3 closed. **Autonomy hardening + supervision + disk retention are done and live-verified (2026-08-20)** — First Mate now waits without burning context, iterates to convergence on its own, diagnoses and repairs its own broken checks, escalates immediately on a criterion that can never pass, stops re-asking settled questions, and reclaims disk on request. 192 daemon tests + 13 dashboard tests pass; all four smoke scenarios pass live with real workers. **Next: Phase 4 — Slack + memory loop**, in a fresh session.
 
 ---
 
 ## Next up (start here)
 
-1. **Jacques: re-run the two tasks that exposed all this** (see the 2026-08-20 Done entry). Restart the daemon first so it picks up the new engine — `cd daemon && uv run fm serve --open`. Scope them fresh: the *existing* contracts still say "single pass by design" and have `ENG-652-PLAN.md` in `scope_in`, both artifacts of the old engine's limits, and a re-scope is what puts a `when` gate and an `on_failure` edge in the contract. PR #492 still has 3 unresolved cubic threads (`useDocumentMeta.ts:88`, `MetaTab.tsx:101`, `useDocumentMeta.test.ts:240`) — a good live test of convergence.
-2. **Jacques: re-check the dashboard** — `cd dashboard && pnpm install && pnpm build`, then `cd daemon && uv run fm serve --open`. Round 1 of feedback is done (see the 2026-08-19 "feedback round 1" Done entry). Worth a look specifically at: the new-task → session hand-off, markdown density in the scoping conversation, and narrow-window layout.
-3. **Phase 4 — Slack + memory loop** (PRD §6.9, §6.6, §8): socket-mode Slack app (blocking questions with option buttons, completions/failures, threaded per task, `fm answer` equivalence, `remember:` replies, `status/pause/abandon` commands); learning extraction after successful steps; recurring-answer promotion suggestions; memory compaction with archive. Question fingerprinting (PRD §6.5) **is now built** (per-task re-ask suppression, 2026-08-20) — Phase 4 needs only the cross-task promotion suggestion on top of it.
-4. Nice-to-haves carried forward: a first live interactive run of `fm task "<goal>"` by Jacques (browser scoping is now live-verified; the terminal chat still hasn't had a human), `block-with-timeout` ask mode (park-only today), question batching at step boundaries (PRD §6.5), `--max-budget-usd` per worker, "promote to memory?" surface in the Memory view (needs Phase 4 fingerprinting). (Repeated-question fingerprinting is **done** — see 2026-08-20.)
+**Phase 4 — Slack + memory loop (PRD §6.9, §6.6, §8).** This is the next
+build. Nothing from the 2026-08-20 work is outstanding; start here.
+
+1. **Slack connector, both directions (PRD §6.9).** Socket-mode app (no
+   public endpoint). Outbound: blocking questions with option buttons, task
+   completions/failures, escalations — throttled to one thread per task with
+   follow-ups threaded under it. Inbound: button clicks and threaded replies
+   resolve to the same path as `fm answer`; `remember: <fact>` appends to
+   project memory; a deliberately minimal command set (`status`,
+   `pause <task>`, `abandon <task>`). Answer consistency both ways within a
+   second, first-write-wins with a notice (the `/questions/{id}/answer`
+   endpoint already returns 409 with the existing answer — reuse it).
+   *Worth knowing before starting:* answers are no longer just recorded —
+   they route through `apply_structured_answer` → `needs_replan` →
+   `replan.py`, and a free-text Slack reply must reach the same path (see
+   the 2026-08-20 decision log). The supervisor also posts non-blocking
+   `fyi` questions now (gate repairs, cleanup offers); Slack should NOT page
+   for those.
+2. **Memory loop (PRD §6.6).** Only the plumbing exists today —
+   `Store.write_memory` / `memory_for_project`, injected into every worker
+   and scoping session. Still to build: (a) learning extraction after a
+   successful step (narrowly prompted — "what project-specific fact would
+   have saved time; no generic advice"), (b) promotion of recurring answers
+   to memory, (c) compaction with an archive when a memory file grows past
+   a threshold. **Question fingerprinting is already built** and is what (b)
+   needs: `question_fingerprint` keys on the situation, and per-task re-ask
+   suppression is live — Phase 4 adds only the *cross-task* promotion
+   suggestion on top.
+3. **Carried nice-to-haves** (none blocking Phase 4): a first live
+   interactive `fm task "<goal>"` run by Jacques (the terminal scoping chat
+   still hasn't had a human — the browser flow is well covered),
+   `block-with-timeout` ask mode (park-only today), question batching at
+   step boundaries (PRD §6.5), `--max-budget-usd` per worker, and a
+   "promote to memory?" surface in the Memory view (needs item 2).
+
+## Engine shape after 2026-08-20 (read before touching the orchestrator)
+
+The control flow gained two primitives and two LLM decision points. A
+session that only knows the pre-2026-08-20 engine will misread the loop.
+
+- **`StepSpec.when` (a `Gate`)** — a shell probe the *daemon* polls before
+  spawning a worker. The task sits in the new **`waiting`** status holding no
+  session, no tmux window, no tokens and no worker slot; `GateState` persists
+  progress so a restart resumes the same wait. Boot `reconcile` resumes
+  `waiting` tasks. Step prompts must never sleep or poll — that is what
+  gates replace.
+- **`StepSpec.on_failure` (a `LoopBack`)** — on criteria failure the step
+  cursor *rewinds* and every step from the target forward re-runs. The main
+  loop is therefore index-driven, and `_run_step` returns `True` (advance) /
+  `int` (rewind to that index) / `None` (resting state). **`bool` is a
+  subclass of `int` in Python** — test `is not True` before treating a
+  return as an index, or `True` reads as "rewind to index 1".
+- **Failure ladder order:** attempt 1 → attempt 2 with the failure as
+  context → criterion judgement (only with a loop edge, only after a
+  non-progressing round) → `on_failure` rewind → escalate. A round is
+  therefore *two* criterion evaluations.
+- **`supervisor.py`** — investigates with read-only tools when a gate stalls
+  or a step keeps failing. May rewrite `steps[i].when`; may **never** touch a
+  criterion (no field and no function exists to — asserted by a test).
+  Repairs are verified by re-probing before being committed.
+- **`replan.py`** — an operator's free-text answer becomes a contract edit
+  under the same `validate_contract` gate, never touching `goal`/`repo`, with
+  the before-contract and a unified diff persisted.
+- **`cleanup.py`** — never removes a worktree on its own; the clean-and-pushed
+  bar plus `--force`. `fm clean` / `POST /tasks/{id}/cleanup` / the dashboard
+  reclaim control are the entry points.
+- **Guard:** `.fm/artifacts/` is always writable and git-invisible; lockfiles
+  pass the hook while manifests still trip it (a step-boundary check catches
+  real drift); a refusal answer rewrites the offending step prompt.
 
 ## In progress
 
-- Nothing half-finished. The 2026-08-20 autonomy work is complete, tested, and live-verified with real workers.
-- **Waiting on Jacques:** re-run the two tasks that exposed all of it (Next up #1). The engine changes are backward compatible — all existing task state on disk loads unchanged — but the *old contracts* still encode the old limits ("single pass by design", `ENG-652-PLAN.md` in `scope_in`), so those two tasks need re-scoping rather than re-running, and the daemon needs a restart to pick up the new code.
+- **Nothing.** The 2026-08-20 work is complete, tested, live-verified, and
+  committed (10 commits, clean tree). The daemon is running the current code
+  with the dashboard built.
 
 ## Done
 
@@ -147,6 +213,7 @@ Carried from PRD §10 — raise with Jacques when they become blocking; otherwis
 
 One dated entry per working session: who/what/outcome, newest first.
 
+- **2026-08-20** — **Session 7 closed.** Jacques's report of two stuck real tasks turned into a full autonomy pass, driven end to end by his framing ("First Mate should be smart enough to sit and wait… and know what to ask me vs what is a runtime decision"; "the overseeing engine should see that the issue is his check gate, and fix it in the plan/contract"). Ten commits, all live-verified against real tasks and real workers rather than only tests: gates (waiting costs no session, slot or tokens), bounded convergence loops, `replan.py` (a prose answer rewrites the contract under validation), the supervisor (diagnoses and repairs its own broken gates; escalates at once on a criterion that can never pass — diagnosis-only by construction), four guard fixes that stopped the repeat-prompt loop, and never-automatic disk retention with `fm clean`. Test counts: 107 → 192 daemon, 13 dashboard; smoke scenarios 2 → 4, all passing with real sonnet workers. **Six bugs found by running the thing rather than reading it**, two of them serious: `fm serve` printed success after a failed port bind (so a "restart" silently kept old code serving — which cost a round trip in this very session), and `unpushed_commits` ran `git log --not --remotes` with no positive revision, so a worktree holding unpushed commits read as *safe to delete*. Also: `isinstance(True, int)` corrupting the loop-rewind cursor, git ignoring a linked worktree's own `info/exclude`, a root-only dep scan reporting 0B for a worktree that was 96% `node_modules`, and an idle clock that could never tick because it took `max()` over `.git`. Two UI misses of my own (reclaim block on the wrong sidebar; `index.html` cached so a rebuilt dashboard looked unchanged) — both now fixed, and the second was a genuine server bug worth having. **Next session: Phase 4, nothing outstanding from this one.**
 - **2026-08-20** — Session 7 addendum 3 (Claude, on Jacques asking whether finished tasks clean up their worktrees): they did not — 1.4GB across four worktrees, 1.3GB of it `node_modules`, plus stale `fm/*` branches and smoke runs. Built retention to Jacques's spec: never-automatic removal, an end-of-task non-blocking notice, a per-task reclaim control for any finished task, and `fm clean` with report/`--all`/`--task`/`--dry-run`/`--deps-only`/`--force`/`--maintenance`. The clean-and-pushed safety bar refused three of four real worktrees, one holding 8 uncommitted source files. Testing caught a silent data-loss bug in my own code (`git log --not --remotes` without a positive revision reports nothing, so unpushed commits read as safe to delete) plus a root-only dep scan and an idle clock that could never tick. 192 daemon tests, 13 dashboard tests.
 - **2026-08-20** — Session 7 addendum 2 (Claude, on Jacques asking why a finished task wasn't under "done", then approving immediate escalation on unsatisfiable criteria): the task was `waiting`, not done — parked 56 minutes on the gate whose premise had died when PR #493 merged. Found and fixed a second, sneakier bug in the process: `fm serve` printed success after a failed port bind, so the "restart" that was supposed to load the supervisor silently left the old daemon serving. With a real restart the supervisor fired on the live task, rewrote the gate to assert terminal check state, and let `verify` run — which then failed its criterion, so I built criterion judgement too: after a non-progressing round, escalate immediately on a confident, evidenced `unsatisfiable` instead of burning the loop. Diagnosis-only by construction (no field and no function exists to apply a criterion change). Verified on the real criterion: `unsatisfiable`, high confidence, and it found what I had missed — cubic's check-run passed the new head, and the "new" inline comments are old threads re-anchored by GitHub, one annotated by cubic as addressed. 169 daemon tests, 13 dashboard tests. The ENG-652 task is paused pending Jacques's decision on its criterion.
 - **2026-08-20** — Session 7 addendum (Claude, on Jacques asking why a completed task wasn't under "done"): it wasn't done — it was `waiting`, parked 23 minutes on a `verify` gate that could never open, because cubic filed no review row for a HEAD it had nothing to say about. Jacques's answer to "how should gates avoid this" reframed the fix: the engine should notice the gate is the problem, check GitHub itself, fix the contract, and pass the job. Built `supervisor.py` accordingly — read-only investigation, three verdicts, gate-only repair authority enforced in code, anti-trivial-probe guard, and repairs verified by re-probing before they are committed. Ran it against the real stuck task: it correctly diagnosed `gate_wrong`, and found the thing I had missed — the PR was already MERGED, so the record could never exist — choosing `drop_gate`. 158 daemon tests (+20); new `phase4` smoke passes live (gate repaired to a probe the supervisor worked out itself, 0 blocking questions); `phase3` re-verified unaffected.
