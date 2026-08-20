@@ -144,9 +144,55 @@ PHASE3_CONTRACT = {
 }
 
 
+# The gate waits on a record that will never appear, while the thing the
+# operator actually cares about (marker-done.txt) is already true. A
+# correct supervisor investigates, sees the gate cannot open, repairs or
+# drops it, and lets the job finish — without asking the operator.
+PHASE4_CONTRACT = {
+    "goal": "smoke4: supervisor repairs a gate that can never open",
+    "scope_in": ["**"],
+    "steps": [
+        {
+            "id": "work",
+            "title": "Do the work and record that it is done",
+            "prompt": (
+                "Create a file named marker-done.txt in the repository root "
+                "whose content is exactly the line: done\n"
+                "Then stop. Do not create any other file."
+            ),
+            "criteria": [],
+        },
+        {
+            "id": "verify",
+            "title": "Confirm the work landed",
+            "prompt": (
+                "The wait already happened before this session started — do "
+                "NOT poll or sleep. Report the contents of marker-done.txt "
+                "in your final message, then stop. Create nothing."
+            ),
+            "allowed_tools": ["Read", "Glob", "Grep"],
+            "criteria": ["work_done"],
+            # Waits for a receipt that is never written by anything. The
+            # real condition (marker-done.txt) is already satisfiable, so a
+            # supervisor that actually looks can see the gate is at fault.
+            "when": {
+                "command": "test -f receipt-that-never-appears.txt",
+                "description": "a receipt file that nothing ever creates",
+                "interval": 5,
+                "ceiling": 300,
+            },
+        },
+    ],
+    "criteria": [
+        {"id": "work_done", "command": "grep -qx done marker-done.txt"},
+    ],
+}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="First Mate end-to-end smoke tests")
-    ap.add_argument("--scenario", choices=["phase1", "phase2", "phase3"],
+    ap.add_argument("--scenario",
+                    choices=["phase1", "phase2", "phase3", "phase4"],
                     default="phase1")
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--port", type=int, default=8791)
@@ -189,8 +235,10 @@ def main() -> None:
 
     scenario = args.scenario
     base_contract = {"phase1": CONTRACT, "phase2": PHASE2_CONTRACT,
-                     "phase3": PHASE3_CONTRACT}[scenario]
-    answer = {"phase1": "red", "phase2": "allow", "phase3": "retry"}[scenario]
+                     "phase3": PHASE3_CONTRACT,
+                     "phase4": PHASE4_CONTRACT}[scenario]
+    answer = {"phase1": "red", "phase2": "allow", "phase3": "retry",
+              "phase4": "run the step anyway"}[scenario]
     contract = dict(base_contract, repo=str(repo))
     resp = api("POST", "/tasks", {"contract": contract, "run": True}, base=base)
     tid = resp["task"]["id"]
@@ -245,7 +293,7 @@ def main() -> None:
     print("\n" + "=" * 60)
     print(f"{scenario.upper()} SMOKE REPORT")
     print(f"  final task status : {status}")
-    if scenario != "phase3":
+    if scenario not in ("phase3", "phase4"):
         print(f"  park/answer cycle : {'exercised' if answered else 'NOT exercised'}")
     if scenario == "phase1":
         hello, color = read("hello.txt"), read("color.txt")
@@ -253,6 +301,27 @@ def main() -> None:
         print(f"  color.txt         : {color!r}")
         ok = (status == "done" and answered and color == "red"
               and "hello from first mate" in hello and evidence.exists())
+    elif scenario == "phase4":
+        marker = read("marker-done.txt")
+        events = [e["event"] for e in store.events_tail(tid, n=800)]
+        final = store.load_contract(tid)
+        vstep = next((sp for sp in final.steps if sp.id == "verify"), None)
+        supervised = "gate_supervising" in events
+        repaired = "gate_repaired" in events or "gate_dropped" in events
+        fyis = [q for q in store.list_questions(task_id=tid) if q.type == "fyi"]
+        blocking = [q for q in store.list_questions(task_id=tid)
+                    if q.type != "fyi"]
+        print(f"  marker-done.txt   : {marker!r}")
+        print(f"  supervisor ran    : {supervised}")
+        print(f"  gate repaired     : {repaired}")
+        print(f"  gate now          : {vstep.when.command if vstep and vstep.when else '(dropped)'}")
+        print(f"  fyi notices       : {len(fyis)}")
+        print(f"  blocking questions: {len(blocking)}")
+        ok = (status == "done" and supervised and repaired
+              and marker == "done"
+              # The operator was informed, never stopped.
+              and len(fyis) >= 1 and not blocking
+              and evidence.exists())
     elif scenario == "phase3":
         rounds = read("rounds.txt")
         events = [e["event"] for e in store.events_tail(tid, n=800)]

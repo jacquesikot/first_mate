@@ -384,6 +384,15 @@ class GateState:
     probes: int = 0
     last_exit: int | None = None
     last_output: str = ""
+    # Supervisor bookkeeping: how many times it has looked at this stalled
+    # gate, and what it concluded each time (kept so the ceiling escalation
+    # can tell the operator what was already checked).
+    supervisions: int = 0
+    repairs: int = 0
+    diagnoses: list[dict] = field(default_factory=list)
+    # Probe count at the last supervision, so the trigger spaces attempts
+    # out instead of firing every probe once the threshold is crossed.
+    supervised_at_probe: int = 0
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)

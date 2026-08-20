@@ -66,12 +66,29 @@ export interface SessionRecord {
   peak_tokens: number;
 }
 
+/** One supervisor look at a stalled gate. */
+export interface GateDiagnosis {
+  at?: string;
+  verdict: "gate_wrong" | "still_waiting" | "cannot_tell";
+  findings: string;
+  reasoning: string;
+  new_command: string;
+  drop_gate: boolean;
+  confidence: string;
+  errors: string[];
+}
+
 export interface GateState {
   first_probe_at: string;
   last_probe_at: string;
   probes: number;
   last_exit: number | null;
   last_output: string;
+  /** How many times the supervisor has investigated this stalled gate. */
+  supervisions: number;
+  repairs: number;
+  diagnoses: GateDiagnosis[];
+  supervised_at_probe: number;
 }
 
 export interface StepState {

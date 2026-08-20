@@ -212,6 +212,9 @@ function latestResults(detail: TaskDetail): Record<string, CriterionResult> {
  *  Waiting is deliberately shown as progress rather than as a problem —
  *  the task holds no session open while this is on screen. */
 function GateWait({ gate, state }: { gate: Gate; state: GateState | null }) {
+  const last = state?.diagnoses?.length
+    ? state.diagnoses[state.diagnoses.length - 1]
+    : null;
   const started = state?.first_probe_at ? new Date(state.first_probe_at).getTime() : null;
   const elapsed = started ? Math.max(0, Date.now() - started) / 1000 : 0;
   const pct = gate.ceiling > 0 ? Math.min(100, (elapsed / gate.ceiling) * 100) : 0;
@@ -257,8 +260,32 @@ function GateWait({ gate, state }: { gate: Gate; state: GateState | null }) {
       <div className="mono" style={{ fontSize: 10.5, color: "var(--tx4)" }}>
         no session running — this wait consumes no context and no worker slot
       </div>
+      {last && (
+        <div
+          style={{
+            borderTop: "1px solid var(--bd2)",
+            paddingTop: 7,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <div className="mono" style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--tx3)" }}>
+            supervisor checked this{state && state.supervisions > 1 ? ` ${state.supervisions}×` : ""} — {verdictLabel(last.verdict)}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--tx2)", maxWidth: "80ch" }}>
+            {last.findings}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function verdictLabel(v: string): string {
+  if (v === "gate_wrong") return "the check itself was wrong";
+  if (v === "still_waiting") return "genuinely still waiting";
+  return "could not tell";
 }
 
 function GenerationRail({ step, wall }: { step: StepState; wall: number }) {

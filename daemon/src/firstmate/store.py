@@ -39,6 +39,12 @@ DEFAULT_CONFIG = {
     "handoff_model": None,  # null → the step's worker model
     "scoping_model": None,  # null → the user's default claude model
     "replan_model": None,
+    "supervisor_model": None,  # null → handoff_model, else the worker model
+    # A stalled gate gets investigated by the supervisor rather than simply
+    # burning its ceiling and interrupting the operator.
+    "supervise_gates": True,
+    "supervise_after_s": 300,
+    "max_gate_supervisions": 3,
     "wall_tokens": 150_000,
     "max_generations": 8,
     "worker_timeout_s": 3600,

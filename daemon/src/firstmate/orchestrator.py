@@ -34,7 +34,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import guard, relay, spawner, validation, workerfiles
+from . import guard, relay, spawner, supervisor, validation, workerfiles
 from .exec import context, gitops, tmux
 from .models import (
     Contract, GateState, Question, SessionRecord, StepSpec, StepState, Task,
@@ -244,7 +244,8 @@ class TaskRunner:
 
         # Gate first: no worker is spawned — and so no context is spent —
         # until the step's precondition actually holds.
-        if spec.when is not None and not await self._await_gate(task, spec, st):
+        if spec.when is not None and not await self._await_gate(
+                task, contract, spec, st):
             return None
 
         st.status = "running"
@@ -487,8 +488,8 @@ class TaskRunner:
 
     # --------------------------------------------------------------- gates
 
-    async def _await_gate(self, task: Task, spec: StepSpec,
-                          st: StepState) -> bool:
+    async def _await_gate(self, task: Task, contract: Contract,
+                          spec: StepSpec, st: StepState) -> bool:
         """Wait for a step's `when` gate to pass. Returns True when it
         passed (the step may run), False when the task went to a resting
         state (ceiling escalation, pause, abandon).
@@ -536,14 +537,41 @@ class TaskRunner:
                 await self._set_status(task, "running")
                 return True
 
+            # A gate that has been red for a while may be waiting on
+            # something that already happened in a shape it cannot see. Ask
+            # the supervisor to look at the real world before burning the
+            # rest of the ceiling — and long before bothering the operator.
+            if self._should_supervise(st, gate):
+                outcome = await self._supervise_gate(task, contract, spec, st,
+                                                     gate, result)
+                if outcome == "repaired":
+                    gate = spec.when
+                    if gate is None:
+                        # Nothing left to wait for.
+                        st.status = "pending"
+                        self.store.save_task(task)
+                        await self.emit("gate_dropped", step_id=spec.id)
+                        await self._set_status(task, "running")
+                        return True
+                    continue  # re-probe immediately with the fixed gate
+                if outcome == "blocked":
+                    return False
+
             if self._gate_elapsed(st) >= gate.ceiling:
                 what = gate.description or gate.command
+                # Hand the operator whatever the supervisor learned, so the
+                # question is "here is what I found" rather than "no idea".
+                summary = (f"Still waiting on {what} after "
+                           f"{int(self._gate_elapsed(st) // 60)} min "
+                           f"(ceiling {gate.ceiling // 60} min, "
+                           f"{st.gate.probes} probes)")
+                if st.gate.diagnoses:
+                    last = st.gate.diagnoses[-1]
+                    summary += (f" — supervisor checked and reported: "
+                                f"{last.get('verdict')}: "
+                                f"{(last.get('findings') or '')[:400]}")
                 await self._escalate(
-                    task, spec.id,
-                    f"Still waiting on {what} after "
-                    f"{int(self._gate_elapsed(st) // 60)} min "
-                    f"(ceiling {gate.ceiling // 60} min, {st.gate.probes} probes)",
-                    [result], worktree,
+                    task, spec.id, summary, [result], worktree,
                     options=["keep waiting", "run the step anyway", "abandon"],
                 )
                 st.status = "blocked"
@@ -566,6 +594,181 @@ class TaskRunner:
                     await self._set_status(
                         task, "abandoned" if action == "abandoned" else "paused")
                     return False
+
+    def _should_supervise(self, st: StepState, gate) -> bool:
+        """Whether a stalled gate has earned a look from the supervisor.
+
+        Cheap waits shouldn't pay for an LLM call, and a gate that is
+        merely slow shouldn't be second-guessed on its second probe. The
+        trigger is "stalled long enough to be suspicious, and not looked
+        at recently", bounded by a repair cap.
+        """
+        if st.gate is None:
+            return False
+        if not self.config.get("supervise_gates", True):
+            return False
+        if st.gate.supervisions >= int(self.config.get("max_gate_supervisions", 3)):
+            return False
+        threshold = float(self.config.get("supervise_after_s", 300))
+        # ...or a quarter of the ceiling, whichever is sooner, so a short
+        # ceiling still gets supervised before it expires.
+        threshold = min(threshold, max(60.0, gate.ceiling / 4))
+        if self._gate_elapsed(st) < threshold:
+            return False
+        # Space attempts: at least this many probes since the last look.
+        gap = max(3, int(threshold // max(gate.interval, 1)))
+        return st.gate.probes - st.gate.supervised_at_probe >= gap
+
+    async def _supervise_gate(self, task: Task, contract: Contract,
+                              spec: StepSpec, st: StepState, gate,
+                              result) -> str:
+        """Have the supervisor investigate a stalled gate.
+
+        Returns "repaired" when the gate was changed and should be
+        re-probed, "blocked" when the task went to a resting state, and
+        "continue" to keep waiting as before.
+
+        A repair is only accepted if the NEW probe actually passes — a
+        confident-sounding fix that still doesn't open the gate is not a
+        fix, and applying it would silently move the goalposts.
+        """
+        assert st.gate is not None
+        st.gate.supervisions += 1
+        st.gate.supervised_at_probe = st.gate.probes
+        self.store.save_task(task)
+        worktree = Path(task.worktree)
+        model = (self.config.get("supervisor_model")
+                 or self.config.get("handoff_model")
+                 or self.config["worker_model"])
+        await self.emit("gate_supervising", step_id=spec.id,
+                        attempt=st.gate.supervisions,
+                        elapsed_s=self._gate_elapsed(st))
+
+        diagnosis = await asyncio.to_thread(
+            supervisor.investigate, worktree, contract, spec.id, gate,
+            st.gate.probes, self._gate_elapsed(st), result.exit_status,
+            st.gate.last_output, model)
+        record = diagnosis.to_dict()
+        record["at"] = now_iso()
+        st.gate.diagnoses.append(record)
+        self.store.save_task(task)
+        self.store.save_step_artifact(
+            task.id, spec.id,
+            f"gate-diagnosis-{st.gate.supervisions}.md",
+            self._render_diagnosis(gate, diagnosis))
+
+        if not diagnosis.repairs_gate:
+            # Either it's genuinely still waiting, or the supervisor
+            # couldn't tell. Both mean: carry on waiting.
+            await self.emit("gate_diagnosed", step_id=spec.id,
+                            verdict=diagnosis.verdict,
+                            confidence=diagnosis.confidence,
+                            errors=diagnosis.errors or None,
+                            findings=diagnosis.findings[:500])
+            return "continue"
+
+        old_command = gate.command
+        try:
+            new_gate = supervisor.apply_gate_repair(contract, spec.id, diagnosis)
+        except ValueError as e:
+            await self.emit("gate_repair_rejected", step_id=spec.id,
+                            reason=str(e))
+            return "continue"
+
+        # Verify before trusting: the repaired probe must actually pass.
+        if new_gate is not None:
+            check = await asyncio.to_thread(
+                validation.run_gate, worktree, new_gate)
+            if not check.passed:
+                # Put the original back; a probe that still fails is not a
+                # diagnosis we can act on, and swapping it in would change
+                # what we're waiting for on nothing but confidence.
+                step = next(sp for sp in contract.steps if sp.id == spec.id)
+                step.when = gate
+                await self.emit("gate_repair_rejected", step_id=spec.id,
+                                reason="the replacement probe also failed",
+                                exit_status=check.exit_status)
+                return "continue"
+
+        st.gate.repairs += 1
+        self.store.save_contract(task.id, contract)
+        contract.amendments.append({
+            "at": now_iso(), "question_id": None,
+            "question": f"gate on step '{spec.id}' was not opening",
+            "answer": ("dropped the gate" if new_gate is None
+                       else f"repaired probe: {new_gate.command}"),
+            "by": "supervisor",
+            "summary": diagnosis.findings[:600],
+        })
+        self.store.save_contract(task.id, contract)
+        self.store.save_task(task)
+
+        # Tell the operator what happened, without stopping for them: this
+        # is First Mate fixing its own instrument, not a decision about
+        # their work.
+        q = Question(
+            id=new_id("q"),
+            task_id=task.id,
+            step_id=spec.id,
+            type="fyi",
+            urgency="normal",
+            status="noted",
+            question=(
+                f"The gate on step '{spec.id}' was waiting for something it "
+                f"could not observe, so I fixed the check and carried on. "
+                f"{diagnosis.findings[:600]}"),
+            evidence={
+                "old_command": old_command,
+                "new_command": new_gate.command if new_gate else None,
+                "dropped": new_gate is None,
+                "verdict": diagnosis.verdict,
+                "confidence": diagnosis.confidence,
+                "reasoning": diagnosis.reasoning[:1000],
+            },
+        )
+        q.fingerprint = question_fingerprint(q.type, q.evidence, q.question)
+        self.store.save_question(q)
+        await self.emit("gate_repaired", step_id=spec.id,
+                        question_id=q.id,
+                        dropped=new_gate is None,
+                        old_command=old_command,
+                        new_command=new_gate.command if new_gate else None,
+                        confidence=diagnosis.confidence,
+                        findings=diagnosis.findings[:500])
+        return "repaired"
+
+    @staticmethod
+    def _render_diagnosis(gate, diagnosis) -> str:
+        return "\n".join([
+            "# Gate diagnosis",
+            "",
+            f"**Verdict:** {diagnosis.verdict} (confidence: {diagnosis.confidence})",
+            "",
+            "## The gate as it stood",
+            "",
+            f"Waiting for: {gate.description or '(no description)'}",
+            "",
+            "```sh",
+            gate.command,
+            "```",
+            "",
+            "## Findings",
+            "",
+            diagnosis.findings or "(none)",
+            "",
+            "## Reasoning",
+            "",
+            diagnosis.reasoning or "(none)",
+            "",
+            "## Prescribed change",
+            "",
+            ("drop the gate entirely" if diagnosis.drop_gate and not diagnosis.new_command
+             else f"```sh\n{diagnosis.new_command}\n```" if diagnosis.new_command
+             else "(none)"),
+            "",
+            *(["## Errors", "", *(f"- {e}" for e in diagnosis.errors), ""]
+              if diagnosis.errors else []),
+        ]) + "\n"
 
     @staticmethod
     def _gate_elapsed(st: StepState) -> float:
