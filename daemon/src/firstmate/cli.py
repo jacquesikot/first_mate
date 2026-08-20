@@ -588,6 +588,130 @@ def cmd_memory(args) -> int:
     return 2
 
 
+def cmd_skill(args) -> int:
+    """(worker-facing) record durable skill progress.
+
+    Everything written here survives a context wall and is injected into
+    the next session — so a long skill run stops re-deriving what an
+    earlier generation already established.
+    """
+    from . import skillstate
+
+    root = Path(args.worktree or os.environ.get("FM_WORKTREE") or ".")
+
+    if args.action == "show":
+        state = skillstate.load(root)
+        if not state:
+            print("no skill state recorded for this step")
+            return 0
+        print(json.dumps(state, indent=2))
+        return 0
+
+    patch: dict = {}
+    if args.skill:
+        patch["skill"] = args.skill
+    if args.phase:
+        patch["phase"] = args.phase
+    if args.phase_done:
+        patch["phases_done"] = args.phase_done
+    if args.finding:
+        patch["findings"] = args.finding
+    if args.outstanding:
+        patch["outstanding"] = args.outstanding
+    if args.artifact:
+        patch["artifacts"] = args.artifact
+    if args.notes:
+        patch["notes"] = args.notes
+    if args.decided:
+        decided = {}
+        for item in args.decided:
+            key, _, value = item.partition("=")
+            if not value:
+                print(f"fm skill: --decided wants key=value, got {item!r}",
+                      file=sys.stderr)
+                return 1
+            decided[key.strip()] = value.strip()
+        patch["decided"] = decided
+    if args.resolve:
+        # Settling something removes it from the work queue, so the next
+        # generation's outstanding list is actually the remaining work.
+        state = skillstate.load(root) or {}
+        keep = [o for o in (state.get("outstanding") or [])
+                if o not in args.resolve]
+        skillstate.save(root, {**state, "outstanding": keep})
+    if not patch and not args.resolve:
+        print("fm skill: nothing to record (see --help)", file=sys.stderr)
+        return 1
+    state = skillstate.merge(root, patch) if patch else (skillstate.load(root) or {})
+    print(f"skill state updated: {skillstate.path_for(root)}")
+    if state.get("phase"):
+        print(f"  phase: {state['phase']}")
+    if state.get("outstanding"):
+        print(f"  outstanding: {len(state['outstanding'])}")
+    return 0
+
+
+# A worker must never be able to park a *probe* with the operator. One
+# generation lost a real park slot to `--question "test question"` while
+# trying to isolate a quoting error (STATUS decision log 2026-08-20); the
+# operator then had to answer, and disclaim, meaningless noise.
+PLACEHOLDER_QUESTIONS = {
+    "test", "test question", "testing", "test?", "hello", "hello world",
+    "foo", "bar", "foo bar", "ping", "x", "asdf", "placeholder", "example",
+}
+
+
+def _looks_like_a_probe(text: str) -> str | None:
+    """Return why this question reads as a test probe, or None if it's real."""
+    t = " ".join(text.lower().split()).strip(" .!?")
+    if t in PLACEHOLDER_QUESTIONS:
+        return f"{text.strip()!r} is a placeholder, not a real question"
+    if len(t) < 15:
+        return (f"{text.strip()!r} is too short to be a real decision "
+                f"({len(t)} chars)")
+    return None
+
+
+def _load_round(spec: str) -> list[dict]:
+    """Read a round of questions from a JSON file (or '-' for stdin).
+
+    A file rather than an inline flag on purpose: a round's prose is long
+    and multi-line, and passing it through the shell is what got a worker's
+    heredoc denied by the permission layer once already.
+    """
+    raw = sys.stdin.read() if spec == "-" else Path(spec).read_text()
+    data = json.loads(raw)
+    # Accept either a bare array or {"preamble": ..., "questions": [...]}.
+    if isinstance(data, dict):
+        data = data.get("questions") or []
+    if not isinstance(data, list) or not data:
+        raise ValueError("a round must be a non-empty JSON array of questions")
+    out = []
+    for i, item in enumerate(data, 1):
+        if isinstance(item, str):
+            item = {"question": item}
+        if not isinstance(item, dict):
+            raise ValueError(f"question {i} is not an object")
+        text = str(item.get("question", "")).strip()
+        if not text:
+            raise ValueError(f"question {i} has no question text")
+        opts = []
+        for o in item.get("options") or []:
+            if isinstance(o, str):
+                opts.append({"label": o, "recommended": False})
+            else:
+                opts.append({"label": str(o.get("label", "")).strip(),
+                             "recommended": bool(o.get("recommended"))})
+        opts = [o for o in opts if o["label"]]
+        out.append({
+            "id": str(item.get("id") or f"q{i}"),
+            "question": text,
+            "options": opts,
+            "default": item.get("default"),
+        })
+    return out
+
+
 def cmd_ask(args) -> int:
     task = args.task or os.environ.get("FM_TASK_ID")
     step = args.step or os.environ.get("FM_STEP_ID")
@@ -595,10 +719,42 @@ def cmd_ask(args) -> int:
     if not task:
         print("fm ask: no task context (FM_TASK_ID unset)", file=sys.stderr)
         return 1
+
+    subs: list[dict] = []
+    if args.round:
+        try:
+            subs = _load_round(args.round)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            print(f"fm ask: bad --round ({e})", file=sys.stderr)
+            return 1
+
+    question = args.question
+    if not question and subs:
+        # A round may carry its preamble in --question; without one, say
+        # plainly how many decisions are waiting.
+        question = (f"{len(subs)} decision{'s' if len(subs) != 1 else ''} "
+                    f"needed before this step can continue.")
+    if not question:
+        print("fm ask: --question or --round is required", file=sys.stderr)
+        return 1
+
+    # Probe check applies to whatever the operator would actually be shown.
+    if args.type != "fyi":
+        for text in ([question] if not subs else [s["question"] for s in subs]):
+            why = _looks_like_a_probe(text)
+            if why:
+                print(f"fm ask: refusing to park a test question — {why}.\n"
+                      f"        Parking interrupts the operator for real. If you "
+                      f"are debugging the command's shape, fix the quoting and "
+                      f"send the REAL question; never substitute a probe.",
+                      file=sys.stderr)
+                return 1
+
     body = {
         "task_id": task, "step_id": step, "type": args.type,
-        "question": args.question, "options": args.option or [],
+        "question": question, "options": args.option or [],
         "default": args.default, "urgency": args.urgency,
+        "questions": subs,
     }
     if args.evidence:
         try:
@@ -789,11 +945,39 @@ def build_parser() -> argparse.ArgumentParser:
                     help="override the wording when promoting")
     sp.set_defaults(func=cmd_memory)
 
+    sp = sub.add_parser(
+        "skill", help="(worker-facing) record durable skill progress")
+    sp.add_argument("action", nargs="?", default="set",
+                    choices=["set", "show"])
+    sp.add_argument("--skill", default=None, help="the skill being run")
+    sp.add_argument("--phase", default=None, help="the phase you are in now")
+    sp.add_argument("--phase-done", action="append",
+                    help="a phase that is complete (repeatable)")
+    sp.add_argument("--finding", action="append",
+                    help="a verified fact worth not re-deriving (repeatable)")
+    sp.add_argument("--decided", action="append", metavar="KEY=VALUE",
+                    help="a settled decision (repeatable)")
+    sp.add_argument("--outstanding", action="append",
+                    help="something still to do (repeatable)")
+    sp.add_argument("--resolve", action="append",
+                    help="remove an outstanding item, verbatim (repeatable)")
+    sp.add_argument("--artifact", action="append",
+                    help="a file you wrote (repeatable)")
+    sp.add_argument("--notes", default=None)
+    sp.add_argument("--worktree", default=None,
+                    help="defaults to $FM_WORKTREE, else cwd")
+    sp.set_defaults(func=cmd_skill)
+
     sp = sub.add_parser("ask", help="(worker-facing) raise a question")
     sp.add_argument("--type", required=True,
                     choices=["clarification", "scope_change", "decision",
                              "approval", "fyi"])
-    sp.add_argument("--question", required=True)
+    sp.add_argument("--question", default=None,
+                    help="the question, or a round's shared preamble")
+    sp.add_argument("--round", default=None, metavar="FILE",
+                    help="JSON file ('-' for stdin) holding an array of "
+                         "questions, each with its own options — one park "
+                         "for the whole round")
     sp.add_argument("--option", action="append")
     sp.add_argument("--default", default=None)
     sp.add_argument("--urgency", default="normal", choices=["blocking", "normal"])

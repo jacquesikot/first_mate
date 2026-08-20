@@ -480,8 +480,71 @@ class Task:
 
 
 @dataclass
+class Option:
+    """One choice on a sub-question. `recommended` is the worker's own
+    suggestion; the operator is never bound by it."""
+
+    label: str
+    recommended: bool = False
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict | str) -> "Option":
+        # A bare string is a label with no recommendation — this is what
+        # the single-question `--option` flag produces.
+        if isinstance(d, str):
+            return cls(label=d)
+        return _from(cls, d)
+
+
+@dataclass
+class SubQuestion:
+    """One question inside a round.
+
+    A skill like reach-plan grills in *rounds*: 4-6 questions at once, each
+    with its own options. Before this existed the only way to express that
+    was to flatten the whole round into one prose blob with a placeholder
+    option, which is unreadable and unanswerable (STATUS decision log
+    2026-08-20).
+    """
+
+    id: str
+    question: str
+    options: list[Option] = field(default_factory=list)
+    default: str | None = None
+    answer: str | None = None
+
+    def recommended(self) -> str | None:
+        """The option the worker recommends, if it marked one."""
+        for o in self.options:
+            if o.recommended:
+                return o.label
+        return self.default
+
+    def to_dict(self) -> dict:
+        d = dataclasses.asdict(self)
+        d["options"] = [o.to_dict() for o in self.options]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SubQuestion":
+        sq = _from(cls, d)
+        sq.options = [Option.from_dict(o) for o in d.get("options") or []]
+        return sq
+
+
+@dataclass
 class Question:
-    """A structured request for the owner's input (PRD §6.5)."""
+    """A structured request for the owner's input (PRD §6.5).
+
+    One Question is one park. When `questions` is non-empty this is a
+    *round*: `question` carries the shared preamble (what was verified,
+    why this is being asked) and each entry in `questions` is answered on
+    its own. A round is answered as a set, so the operator's four
+    decisions cost one interruption instead of four.
+    """
 
     id: str
     task_id: str
@@ -497,6 +560,8 @@ class Question:
     answered_by: str | None = None
     asked_at: str = field(default_factory=now_iso)
     answered_at: str | None = None
+    # Non-empty for a multi-question round; empty for a plain question.
+    questions: list[SubQuestion] = field(default_factory=list)
     # Identity of the *situation* being asked about, so an equivalent
     # question later in the same task can reuse this answer instead of
     # interrupting the operator again (PRD §6.5, question fingerprinting).
@@ -505,12 +570,37 @@ class Question:
     # one: the id it inherited its answer from.
     answered_from: str | None = None
 
+    def is_round(self) -> bool:
+        return bool(self.questions)
+
+    def sub(self, sid: str) -> SubQuestion:
+        for sq in self.questions:
+            if sq.id == sid:
+                return sq
+        raise KeyError(f"unknown sub-question: {sid}")
+
+    def unanswered(self) -> list[SubQuestion]:
+        return [sq for sq in self.questions if not (sq.answer or "").strip()]
+
+    def render_answer(self) -> str:
+        """A round's answers as one auditable line per decision, so the
+        contract amendment and the worker's injected context read the same
+        way a single answer does."""
+        return "\n".join(
+            f"{sq.id}: {sq.question.strip()} → {(sq.answer or '').strip()}"
+            for sq in self.questions
+        )
+
     def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
+        d = dataclasses.asdict(self)
+        d["questions"] = [sq.to_dict() for sq in self.questions]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Question":
-        return _from(cls, d)
+        q = _from(cls, d)
+        q.questions = [SubQuestion.from_dict(s) for s in d.get("questions") or []]
+        return q
 
 
 def question_fingerprint(qtype: str, evidence: dict | None,

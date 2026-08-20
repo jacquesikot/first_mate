@@ -26,14 +26,36 @@ export interface TaskRow {
   context?: ContextInfo | null;
 }
 
+/** One choice on a sub-question. `recommended` is the worker's suggestion. */
+export interface QuestionOption {
+  label: string;
+  recommended: boolean;
+}
+
+/**
+ * One question inside a round. A skill that grills in rounds (reach-plan)
+ * asks 4-6 of these at once, each with its own options — so they render
+ * and answer separately, instead of as one unreadable blob.
+ */
+export interface SubQuestion {
+  id: string;
+  question: string;
+  options: QuestionOption[];
+  default: string | null;
+  answer: string | null;
+}
+
 export interface Question {
   id: string;
   task_id: string;
   step_id: string | null;
   type: "clarification" | "scope_change" | "decision" | "approval" | "fyi";
+  /** For a round, the shared preamble; otherwise the question itself. */
   question: string;
   urgency: "blocking" | "normal";
   options: string[];
+  /** Non-empty for a round: `question` is then the preamble. */
+  questions: SubQuestion[];
   default: string | null;
   evidence: Record<string, unknown>;
   status: "open" | "answered" | "noted";
@@ -415,6 +437,13 @@ export const api = {
       "POST",
       `/questions/${qid}/answer`,
       { answer, by: "dashboard" }
+    ),
+  /** Answer a round: every sub-question settled in one submission. */
+  answerRound: (qid: string, answers: Record<string, string>) =>
+    req<{ question: Question; resumed: boolean; replan?: ReplanOutcome }>(
+      "POST",
+      `/questions/${qid}/answer`,
+      { answers, by: "dashboard" }
     ),
   cleanupReport: () =>
     req<{

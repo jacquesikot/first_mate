@@ -292,12 +292,36 @@ class Store:
                 out.append(Question.from_dict(json.loads(path.read_text())))
         return out
 
-    def answer_question(self, qid: str, answer: str, by: str) -> Question:
+    def answer_question(self, qid: str, answer: str, by: str,
+                        answers: dict[str, str] | None = None) -> Question:
+        """Record the operator's answer.
+
+        For a round, `answers` maps sub-question id → answer and every
+        sub-question must get one; `answer` is then the rolled-up text.
+        One round is one amendment, but each decision is recorded against
+        the question it actually settles.
+        """
         q = self.load_question(qid)
         if q is None:
             raise KeyError(f"unknown question: {qid}")
         if q.status == "answered":
             raise ValueError(f"question {qid} already answered: {q.answer!r}")
+        if q.is_round():
+            supplied = answers or {}
+            unknown = set(supplied) - {sq.id for sq in q.questions}
+            if unknown:
+                raise ValueError(
+                    f"question {qid} has no sub-question(s): "
+                    f"{', '.join(sorted(unknown))}")
+            for sq in q.questions:
+                if (supplied.get(sq.id) or "").strip():
+                    sq.answer = supplied[sq.id].strip()
+            missing = [sq.id for sq in q.unanswered()]
+            if missing:
+                raise ValueError(
+                    f"question {qid} is a round; still unanswered: "
+                    f"{', '.join(missing)}")
+            answer = q.render_answer()
         q.status = "answered"
         q.answer = answer
         q.answered_by = by

@@ -21,8 +21,8 @@ from . import cleanup, learning, replan, scoping_api
 from .exec import context as contexttrack
 from .exec import gitops, tmux
 from .models import (
-    Contract, Question, QUESTION_TYPES, TERMINAL_TASK_STATUSES, Task,
-    StepState, new_id, now_iso, question_fingerprint, validate_contract,
+    Contract, Question, QUESTION_TYPES, SubQuestion, TERMINAL_TASK_STATUSES,
+    Task, StepState, new_id, now_iso, question_fingerprint, validate_contract,
 )
 from .orchestrator import TaskRunner
 from .store import Store
@@ -1306,8 +1306,10 @@ def create_app(store: Store | None = None, autostart: bool = True,
     async def answer_question(qid: str, request: Request):
         body = await request.json()
         answer = str(body.get("answer", "")).strip()
-        if not answer:
-            raise HTTPException(400, "answer is required")
+        raw_answers = body.get("answers") or {}
+        if not isinstance(raw_answers, dict):
+            raise HTTPException(400, "answers must be an object of id → answer")
+        answers = {str(k): str(v) for k, v in raw_answers.items()}
         q = store.load_question(qid)
         if q is None:
             raise HTTPException(404, f"unknown question: {qid}")
@@ -1315,7 +1317,26 @@ def create_app(store: Store | None = None, autostart: bool = True,
             # First-write-wins with a notice (PRD §6.9).
             raise HTTPException(409, {"error": "already answered",
                                       "answer": q.answer, "by": q.answered_by})
-        q = store.answer_question(qid, answer, str(body.get("by", "cli")))
+        if q.is_round():
+            # One free-text reply to a whole round is a legitimate answer —
+            # it applies to every sub-question the operator didn't settle
+            # individually, exactly as a single question's free text does.
+            if answer:
+                answers = {sq.id: answers.get(sq.id) or answer
+                           for sq in q.questions}
+            if not answers:
+                raise HTTPException(
+                    400, "this question is a round — send `answers` "
+                         "(sub-question id → answer), or `answer` to apply "
+                         "one reply to all of them")
+        elif not answer:
+            raise HTTPException(400, "answer is required")
+        try:
+            q = store.answer_question(qid, answer, str(body.get("by", "cli")),
+                                      answers=answers or None)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        answer = q.answer or answer
         evt = store.append_event(q.task_id, "question_answered", step_id=q.step_id,
                                  data={"question_id": qid, "answer": answer})
         await manager.broadcast(evt)
@@ -1388,9 +1409,20 @@ def create_app(store: Store | None = None, autostart: bool = True,
             default=body.get("default"),
             evidence=body.get("evidence") or {},
             status="noted" if qtype == "fyi" else "open",
+            questions=[SubQuestion.from_dict(s)
+                       for s in body.get("questions") or []],
         )
         if not q.question:
             raise HTTPException(400, "question text is required")
+        # A round's options live on its sub-questions. Carrying a
+        # top-level option list too would render as a button that answers
+        # the whole round with one string — which is exactly the phantom
+        # "See inline options per question" button (STATUS 2026-08-20).
+        if q.is_round():
+            q.options = []
+            for sq in q.questions:
+                if not sq.question.strip():
+                    raise HTTPException(400, f"sub-question {sq.id} has no text")
         q.fingerprint = question_fingerprint(qtype, q.evidence, q.question)
 
         # Already decided? Reuse the answer instead of asking again. A worker

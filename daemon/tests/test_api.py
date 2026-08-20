@@ -606,3 +606,100 @@ def test_websocket_snapshot(client):
         snap = ws.receive_json()
         assert snap["kind"] == "snapshot"
         assert [t["id"] for t in snap["tasks"]] == [tid]
+
+
+# ---- multi-question rounds (a skill's grilling round; STATUS 2026-08-20) ----
+
+
+def round_body(tid: str) -> dict:
+    return {
+        "task_id": tid, "step_id": "s1", "type": "decision",
+        "question": "Verified the sidebar; 2 forks need settling.",
+        "questions": [
+            {"id": "q1", "question": "Keep the existing context tab?",
+             "options": [{"label": "keep both", "recommended": True},
+                         {"label": "replace"}]},
+            {"id": "q2", "question": "How to differentiate?",
+             "options": [{"label": "sub-tabs"}, {"label": "collapsible"}]},
+        ],
+    }
+
+
+def test_round_parks_once_and_keeps_options_per_question(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    r = client.post("/internal/ask", json=round_body(tid))
+    assert r.status_code == 200 and r.json()["status"] == "parked"
+    qid = r.json()["id"]
+    # ONE park for the whole round, not one per question.
+    open_qs = client.get("/questions", params={"status": "open"}).json()["questions"]
+    assert [q["id"] for q in open_qs] == [qid]
+    q = open_qs[0]
+    # No top-level option: that is what rendered as the phantom
+    # "See inline options per question" button.
+    assert q["options"] == []
+    assert [s["id"] for s in q["questions"]] == ["q1", "q2"]
+    assert q["questions"][0]["options"][0]["recommended"] is True
+    assert q["questions"][0]["options"][1]["recommended"] is False
+
+
+def test_round_requires_an_answer_for_every_question(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    qid = client.post("/internal/ask", json=round_body(tid)).json()["id"]
+    r = client.post(f"/questions/{qid}/answer", json={"answers": {"q1": "keep both"}})
+    assert r.status_code == 400 and "q2" in str(r.json())
+    # still open — a partial answer must not resolve the round
+    assert client.get("/questions", params={"status": "open"}).json()["questions"]
+
+
+def test_round_answered_per_question(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    qid = client.post("/internal/ask", json=round_body(tid)).json()["id"]
+    r = client.post(f"/questions/{qid}/answer", json={
+        "answers": {"q1": "keep both", "q2": "sub-tabs"}, "by": "test"})
+    assert r.status_code == 200
+    q = r.json()["question"]
+    assert q["status"] == "answered"
+    assert q["questions"][0]["answer"] == "keep both"
+    assert q["questions"][1]["answer"] == "sub-tabs"
+    # the rolled-up answer names each decision, so the amendment is auditable
+    assert "q1:" in q["answer"] and "sub-tabs" in q["answer"]
+    detail = client.get(f"/tasks/{tid}").json()
+    assert "keep both" in detail["contract"]["amendments"][0]["answer"]
+
+
+def test_round_accepts_one_free_text_reply_for_all(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    qid = client.post("/internal/ask", json=round_body(tid)).json()["id"]
+    r = client.post(f"/questions/{qid}/answer",
+                    json={"answer": "do the simplest thing everywhere"})
+    assert r.status_code == 200
+    q = r.json()["question"]
+    assert all(s["answer"] == "do the simplest thing everywhere"
+               for s in q["questions"])
+
+
+def test_round_rejects_unknown_subquestion_id(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    qid = client.post("/internal/ask", json=round_body(tid)).json()["id"]
+    r = client.post(f"/questions/{qid}/answer", json={
+        "answers": {"q1": "a", "q2": "b", "q9": "typo"}})
+    assert r.status_code == 400 and "q9" in str(r.json())
+
+
+def test_round_rejects_empty_subquestion_text(client):
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    r = client.post("/internal/ask", json={
+        "task_id": tid, "type": "decision", "question": "preamble",
+        "questions": [{"id": "q1", "question": "  "}]})
+    assert r.status_code == 400
+
+
+def test_plain_question_still_answers_flatly(client):
+    """The old shape must keep working — questions already on disk use it."""
+    tid = client.post("/tasks", json={"contract": contract(client.repo)}).json()["task"]["id"]
+    qid = client.post("/internal/ask", json={
+        "task_id": tid, "type": "decision", "question": "Which color?",
+        "options": ["red", "blue"]}).json()["id"]
+    r = client.post(f"/questions/{qid}/answer", json={"answer": "red"})
+    assert r.status_code == 200 and r.json()["question"]["answer"] == "red"
+    assert r.json()["question"]["questions"] == []

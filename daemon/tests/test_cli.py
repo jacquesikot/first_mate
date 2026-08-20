@@ -170,3 +170,108 @@ def test_the_serve_probe_still_refuses_a_port_someone_is_listening_on():
             probe.close()
     finally:
         held.close()
+
+
+# ---- `fm ask` round parsing and probe refusal (STATUS 2026-08-20) ----
+
+
+def test_load_round_normalizes_options(tmp_path):
+    from firstmate.cli import _load_round
+
+    path = tmp_path / "round.json"
+    path.write_text(json.dumps([
+        {"question": "Keep the tab?",
+         "options": [{"label": "keep", "recommended": True}, "replace"]},
+        {"id": "phasing", "question": "One PR or several?",
+         "options": ["one"], "default": "one"},
+    ]))
+    subs = _load_round(str(path))
+    # ids are auto-assigned when omitted, kept when given
+    assert [s["id"] for s in subs] == ["q1", "phasing"]
+    # a bare string option becomes a non-recommended label
+    assert subs[0]["options"] == [
+        {"label": "keep", "recommended": True},
+        {"label": "replace", "recommended": False}]
+    assert subs[1]["default"] == "one"
+
+
+def test_load_round_accepts_wrapped_object(tmp_path):
+    from firstmate.cli import _load_round
+
+    path = tmp_path / "round.json"
+    path.write_text(json.dumps({"questions": [{"question": "Which one?"}]}))
+    assert len(_load_round(str(path))) == 1
+
+
+def test_load_round_rejects_empty_and_untexted(tmp_path):
+    import pytest
+
+    from firstmate.cli import _load_round
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("[]")
+    with pytest.raises(ValueError):
+        _load_round(str(empty))
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps([{"options": ["a"]}]))
+    with pytest.raises(ValueError):
+        _load_round(str(bad))
+
+
+def test_ask_refuses_a_probe(capsys):
+    """A worker must never be able to park "test question" with the
+    operator — one generation did exactly that and cost a real park slot."""
+    code = main(["ask", "--type", "decision", "--question", "test question",
+                 "--task", "t1", "--url", UNREACHABLE])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "refusing to park a test question" in err
+    assert "send the REAL question" in err
+
+
+def test_ask_refuses_a_probe_inside_a_round(tmp_path, capsys):
+    path = tmp_path / "round.json"
+    path.write_text(json.dumps([
+        {"question": "A genuine question about the sidebar layout?"},
+        {"question": "test"},
+    ]))
+    code = main(["ask", "--type", "decision", "--round", str(path),
+                 "--task", "t1", "--url", UNREACHABLE])
+    assert code == 1
+    assert "refusing to park" in capsys.readouterr().err
+
+
+def test_ask_allows_a_short_fyi(capsys):
+    """FYIs are recorded, not parked, so the probe guard must not block
+    a terse one."""
+    code = main(["ask", "--type", "fyi", "--question", "assumed X",
+                 "--task", "t1", "--url", UNREACHABLE])
+    assert code == 0  # daemon unreachable is handled, not an error
+
+
+def test_ask_requires_question_or_round(capsys):
+    code = main(["ask", "--type", "decision", "--task", "t1",
+                 "--url", UNREACHABLE])
+    assert code == 1
+    assert "--question or --round is required" in capsys.readouterr().err
+
+
+def test_ask_round_supplies_a_preamble_when_absent(tmp_path, monkeypatch):
+    """--round with no --question still needs question text for the API."""
+    sent = {}
+
+    def fake_api(method, path, body=None, base=None):
+        sent.update(body or {})
+        return {"message": "parked"}
+
+    monkeypatch.setattr("firstmate.cli.api", fake_api)
+    path = tmp_path / "round.json"
+    path.write_text(json.dumps([
+        {"question": "Should the rail reuse the wide table components?"},
+        {"question": "Is the page_revamp gap in scope for this issue?"},
+    ]))
+    code = main(["ask", "--type", "decision", "--round", str(path),
+                 "--task", "t1", "--url", UNREACHABLE])
+    assert code == 0
+    assert "2 decisions" in sent["question"]
+    assert len(sent["questions"]) == 2

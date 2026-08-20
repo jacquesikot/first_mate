@@ -287,13 +287,44 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
+  // A round is answered as a set: picks accumulate here until every
+  // sub-question has one, then the whole round submits at once.
+  const [picks, setPicks] = useState<Record<string, string>>({});
   const answered = q.status !== "open";
   const accent = q.type === "scope_change" || q.type === "decision";
   const chips = evidenceEntries(q.evidence);
   const long = evidenceLong(q.evidence);
+  const round = q.questions ?? [];
+  const isRound = round.length > 0;
+  const missing = isRound ? round.filter((sq) => !picks[sq.id]?.trim()) : [];
+
+  const submitRound = async (answers: Record<string, string>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await api.answerRound(q.id, answers);
+      toast(
+        `Round answered · ${round.length} decision${round.length === 1 ? "" : "s"}`,
+        `appended to the contract · ${q.id}${r.resumed ? " · task resuming" : ""}`,
+        r.resumed ? "run" : "ok"
+      );
+      refresh();
+    } catch (e) {
+      toast("Answer failed", String(e), "bad");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const submit = async (answer: string) => {
     if (!answer.trim() || busy) return;
+    // On a round, one free-text reply applies to every open sub-question —
+    // the daemon does the same, so the UI must not imply otherwise.
+    if (isRound) {
+      const all: Record<string, string> = {};
+      for (const sq of round) all[sq.id] = picks[sq.id]?.trim() || answer.trim();
+      return submitRound(all);
+    }
     setBusy(true);
     try {
       const r = await api.answer(q.id, answer.trim());
@@ -418,19 +449,152 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
                 ))}
             </div>
           )}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
-            {q.options.map((o) => (
-              <button
-                key={o}
-                className={`btn${o === q.default || (!q.default && o === q.options[0]) ? " accent" : ""}`}
-                style={{ padding: "8px 14px", fontWeight: 500, fontSize: 13 }}
-                disabled={busy}
-                onClick={() => submit(o)}
+          {isRound ? (
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 2 }}>
+              {round.map((sq, i) => {
+                const picked = picks[sq.id];
+                return (
+                  <div
+                    key={sq.id}
+                    style={{
+                      padding: "12px 0",
+                      borderTop: i === 0 ? "1px solid var(--bd)" : "1px solid var(--bd)",
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 9, alignItems: "baseline" }}>
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: 10.5,
+                          color: picked ? "var(--ok)" : "var(--ac)",
+                          flex: "0 0 auto",
+                          paddingTop: 2,
+                        }}
+                      >
+                        {picked ? "✓" : sq.id}
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <Markdown text={sq.question} className="question-body" />
+                        <div
+                          style={{
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: 7,
+                            marginTop: 9,
+                          }}
+                        >
+                          {sq.options.map((o) => (
+                            <button
+                              key={o.label}
+                              className={`btn${
+                                picked === o.label
+                                  ? " accent"
+                                  : !picked && o.recommended
+                                    ? " accent"
+                                    : ""
+                              }`}
+                              style={{
+                                padding: "7px 12px",
+                                fontSize: 12.5,
+                                fontWeight: 500,
+                                opacity: picked && picked !== o.label ? 0.5 : 1,
+                              }}
+                              disabled={busy}
+                              onClick={() =>
+                                setPicks((p) => ({ ...p, [sq.id]: o.label }))
+                              }
+                            >
+                              {o.label}
+                              {o.recommended && (
+                                <span
+                                  className="mono"
+                                  style={{ fontSize: 9.5, marginLeft: 6, opacity: 0.75 }}
+                                >
+                                  rec
+                                </span>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                        {picked && !sq.options.some((o) => o.label === picked) && (
+                          <div
+                            className="mono"
+                            style={{ fontSize: 10.5, color: "var(--tx3)", marginTop: 7 }}
+                          >
+                            your words → {picked}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  marginTop: 12,
+                  paddingTop: 12,
+                  borderTop: "1px solid var(--bd)",
+                }}
               >
-                {o}
-              </button>
-            ))}
-          </div>
+                <button
+                  className="btn accent"
+                  style={{ padding: "8px 14px", fontWeight: 500, fontSize: 13 }}
+                  disabled={busy || missing.length > 0}
+                  onClick={() => submitRound(picks)}
+                >
+                  {missing.length === 0
+                    ? `send ${round.length} answer${round.length === 1 ? "" : "s"}`
+                    : `${missing.length} still unanswered`}
+                </button>
+                {round.some((sq) => sq.options.some((o) => o.recommended)) && (
+                  <button
+                    className="mono dim"
+                    style={{ fontSize: 11, borderBottom: "1px dotted var(--bd3)" }}
+                    disabled={busy}
+                    onClick={() => {
+                      const rec: Record<string, string> = { ...picks };
+                      for (const sq of round) {
+                        const r =
+                          sq.options.find((o) => o.recommended)?.label ?? sq.default;
+                        if (r && !rec[sq.id]) rec[sq.id] = r;
+                      }
+                      setPicks(rec);
+                    }}
+                  >
+                    take every recommendation
+                  </button>
+                )}
+                {Object.keys(picks).length > 0 && (
+                  <button
+                    className="mono dim"
+                    style={{ fontSize: 11, borderBottom: "1px dotted var(--bd3)" }}
+                    disabled={busy}
+                    onClick={() => setPicks({})}
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+              {q.options.map((o) => (
+                <button
+                  key={o}
+                  className={`btn${o === q.default || (!q.default && o === q.options[0]) ? " accent" : ""}`}
+                  style={{ padding: "8px 14px", fontWeight: 500, fontSize: 13 }}
+                  disabled={busy}
+                  onClick={() => submit(o)}
+                >
+                  {o}
+                </button>
+              ))}
+            </div>
+          )}
           <div
             style={{
               display: "flex",
@@ -443,7 +607,13 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           >
             <input
               className="line"
-              placeholder="or answer in your own words — it becomes a binding amendment…"
+              placeholder={
+                isRound
+                  ? missing.length === round.length
+                    ? "or answer the whole round in your own words — binding…"
+                    : `or answer the remaining ${missing.length} in your own words…`
+                  : "or answer in your own words — it becomes a binding amendment…"
+              }
               value={text}
               disabled={busy}
               onChange={(e) => setText(e.target.value)}
@@ -464,15 +634,23 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
             className="mono dimmer"
             style={{ display: "flex", gap: 14, marginTop: 10, fontSize: 10.5, flexWrap: "wrap" }}
           >
-            {q.default && <span>default → {q.default}</span>}
+            {isRound ? (
+              <span>
+                {round.length} decisions · one interruption
+              </span>
+            ) : (
+              q.default && <span>default → {q.default}</span>
+            )}
             <span>
               {q.type === "fyi"
                 ? "non-blocking · recorded only"
                 : "parked · consuming no worker slot"}
             </span>
-            <span style={{ marginLeft: "auto", color: "var(--tx3)" }}>
-              or: fm answer {q.id} "{q.options[0] ?? "…"}"
-            </span>
+            {!isRound && (
+              <span style={{ marginLeft: "auto", color: "var(--tx3)" }}>
+                or: fm answer {q.id} "{q.options[0] ?? "…"}"
+              </span>
+            )}
           </div>
         </div>
       ) : (
@@ -488,8 +666,24 @@ export function QuestionCard({ q, taskGoal }: { q: Question; taskGoal?: string }
           <span className="mono" style={{ color: "var(--ok)", fontSize: 13 }}>
             ✓
           </span>
-          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-            <span style={{ fontSize: 13 }}>{q.answer ?? "noted"}</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+            {isRound ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                {round.map((sq) => (
+                  <span key={sq.id} style={{ fontSize: 12.5 }}>
+                    <span
+                      className="mono"
+                      style={{ fontSize: 10.5, color: "var(--tx3)", marginRight: 7 }}
+                    >
+                      {sq.id}
+                    </span>
+                    {sq.answer}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <span style={{ fontSize: 13 }}>{q.answer ?? "noted"}</span>
+            )}
             <span className="mono" style={{ fontSize: 10.5, color: "var(--tx3)" }}>
               {q.answered_from
                 ? "reused your earlier answer — you were not asked again"
