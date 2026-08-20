@@ -44,8 +44,12 @@ class WorkerSpec:
         return self.output_file or (self.cwd / ".fm" / f"{self.name}.json")
 
 
-def build_command(spec: WorkerSpec) -> list[str]:
-    cmd = ["claude", "-p", spec.prompt, "--output-format", "json"]
+def build_command(spec: WorkerSpec, prompt: str | None = None) -> list[str]:
+    """The `claude` argv. `prompt` overrides the literal prompt text — the
+    spawner passes a `$(cat …)` placeholder so a long prompt never travels
+    through tmux's command line (see `spawn`)."""
+    cmd = ["claude", "-p", prompt if prompt is not None else spec.prompt,
+           "--output-format", "json"]
     if spec.resume:
         cmd += ["--resume", spec.resume]
     else:
@@ -63,16 +67,37 @@ def build_command(spec: WorkerSpec) -> list[str]:
     return cmd
 
 
+def prompt_file(spec: WorkerSpec) -> Path:
+    return spec.resolved_output_file().with_suffix(".prompt.txt")
+
+
 def spawn(spec: WorkerSpec) -> tmux.Window:
-    """Launch the worker; returns immediately with its tmux window."""
+    """Launch the worker; returns immediately with its tmux window.
+
+    The prompt goes to a FILE and the command references it as
+    `"$(cat <file>)"`, expanded by the spawned `sh` — not by us. tmux caps
+    the length of a command it will accept (~16KB on 3.7b), and a step
+    prompt grows every time an operator answer is folded into it by
+    `replan`. A real reach-plan task died at generation 6 with
+    `tmux: command too long` after three grilling rounds, losing an
+    approved plan (STATUS 2026-08-20). Keeping the prompt out of the
+    command line makes the length of the prompt irrelevant to tmux.
+    """
     out = spec.resolved_output_file()
     out.parent.mkdir(parents=True, exist_ok=True)
     err = out.with_suffix(".err.log")
+    pfile = prompt_file(spec)
+    pfile.write_text(spec.prompt)
     env_prefix = "".join(
         f"{k}={shlex.quote(v)} " for k, v in spec.env.items()
     )
+    # shlex.join would quote the $(...) into a literal; splice it in after.
+    placeholder = "\x00PROMPT\x00"
+    joined = shlex.join(build_command(spec, prompt=placeholder))
+    joined = joined.replace(
+        shlex.quote(placeholder), f'"$(cat {shlex.quote(str(pfile))})"')
     shell_cmd = (
-        f"{env_prefix}{shlex.join(build_command(spec))} "
+        f"{env_prefix}{joined} "
         f"> {shlex.quote(str(out))} 2> {shlex.quote(str(err))}"
     )
     return tmux.new_window(spec.name, ["sh", "-c", shell_cmd], cwd=str(spec.cwd))

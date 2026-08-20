@@ -278,3 +278,71 @@ def test_worktree_starts_at_given_base(tmp_path):
     assert "fm/from-first" not in branches
     # deleting a branch that isn't there is a quiet no-op
     gitops.delete_branch(repo, "fm/never-existed")
+
+
+# ---- the prompt must not travel through tmux's command line ----
+# A real reach-plan task died at generation 6 with `tmux: command too
+# long` after three grilling rounds folded operator answers into the step
+# prompt — losing an already-approved plan (STATUS 2026-08-20).
+
+
+def shell_command_for(spec) -> str:
+    """What `spawn` would hand to `sh -c`, without touching tmux."""
+    import shlex
+
+    placeholder = "\x00PROMPT\x00"
+    joined = shlex.join(spawner.build_command(spec, prompt=placeholder))
+    pfile = spawner.prompt_file(spec)
+    return joined.replace(shlex.quote(placeholder),
+                          f'"$(cat {shlex.quote(str(pfile))})"')
+
+
+def test_command_length_does_not_grow_with_the_prompt(tmp_path: Path):
+    sid = "11111111-2222-3333-4444-555555555555"  # pin: only prompt may vary
+    short = spawner.WorkerSpec(prompt="do the thing", cwd=tmp_path, name="w",
+                               session_id=sid)
+    huge = spawner.WorkerSpec(prompt="x" * 60_000, cwd=tmp_path, name="w",
+                              session_id=sid)
+    a, b = shell_command_for(short), shell_command_for(huge)
+    assert a == b, "the command must not vary with prompt content at all"
+    # tmux 3.7b refuses somewhere between 16K and 17K.
+    assert len(b) < 4000, len(b)
+
+
+def test_prompt_is_referenced_by_file_not_inlined(tmp_path: Path):
+    spec = spawner.WorkerSpec(prompt="SECRET-MARKER-TEXT", cwd=tmp_path, name="w")
+    cmd = shell_command_for(spec)
+    assert "SECRET-MARKER-TEXT" not in cmd
+    assert '"$(cat ' in cmd
+    assert str(spawner.prompt_file(spec)) in cmd
+
+
+def test_spawn_writes_the_prompt_file(tmp_path: Path, monkeypatch):
+    """The file must exist before the window starts, or `cat` gets nothing."""
+    seen = {}
+
+    def fake_new_window(name, argv, cwd=None):
+        # By now the prompt file must already be on disk.
+        seen["exists"] = spawner.prompt_file(spec).exists()
+        seen["text"] = spawner.prompt_file(spec).read_text()
+        seen["argv"] = argv
+        return spawner.tmux.Window("@1", name)
+
+    monkeypatch.setattr(spawner.tmux, "new_window", fake_new_window)
+    spec = spawner.WorkerSpec(prompt="a very long prompt " * 2000,
+                              cwd=tmp_path, name="w")
+    spawner.spawn(spec)
+    assert seen["exists"] is True
+    assert seen["text"] == spec.prompt
+    assert len(seen["argv"][2]) < 4000
+
+
+def test_quoting_survives_a_prompt_full_of_shell_metacharacters(tmp_path: Path):
+    """The prompt now contains operator answers verbatim — quotes,
+    backticks and $() included. None of it may be interpreted."""
+    nasty = """He said "don't" & `whoami`; $(echo pwned) | rm -rf / #done"""
+    spec = spawner.WorkerSpec(prompt=nasty, cwd=tmp_path, name="w")
+    cmd = shell_command_for(spec)
+    for frag in ("whoami", "rm -rf", "echo pwned"):
+        assert frag not in cmd, f"{frag} leaked into the command line"
+    spawner.spawn.__doc__  # documented rationale

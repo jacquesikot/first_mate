@@ -213,6 +213,17 @@ class TaskRunner:
             task = self.store.load_task(self.task_id)
             if task is not None:
                 task.status = "failed"
+                # A crash left the step claiming to be `running` with no
+                # loop and no session behind it, so the dashboard showed
+                # "running" over a failed task and it read as stuck
+                # (STATUS 2026-08-20). The step's own state must say what
+                # actually happened, and carry the reason.
+                for st in task.steps:
+                    if st.status in ("running", "validating"):
+                        st.status = "failed"
+                        st.last_failure = (
+                            f"the orchestrator crashed while running this "
+                            f"step: {e}")
                 self.store.save_task(task)
             await self.emit("task_error", error=repr(e))
             raise

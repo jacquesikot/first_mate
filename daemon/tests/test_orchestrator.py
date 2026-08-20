@@ -485,3 +485,32 @@ def test_a_clean_exit_still_validates(tmp_path):
     assert len(calls) == 1
     events = [e["event"] for e in store.events_tail("t1")]
     assert "worker_asked_the_void" not in events
+
+
+def test_a_crash_leaves_no_step_claiming_to_run(tmp_path):
+    """A failed task with a `running` step reads as stuck in the dashboard —
+    the operator sees "running" over state "failed" (STATUS 2026-08-20)."""
+    steps = [StepSpec(id="plan", prompt="p", criteria=["c"])]
+    store, runner, repo = build(tmp_path, steps,
+                                [Criterion(id="c", command="true")])
+
+    async def boom(task, contract, spec, st, handoff):
+        st.status = "running"
+        store.save_task(task)
+        raise RuntimeError("tmux: command too long")
+
+    runner._run_generation = boom  # type: ignore[assignment]
+
+    async def scenario():
+        with __import__("pytest").raises(RuntimeError):
+            await runner.run()
+
+    asyncio.run(scenario())
+    task = store.load_task("t1")
+    assert task.status == "failed"
+    st = task.step_state("plan")
+    assert st.status == "failed", f"step still claims {st.status!r}"
+    assert "crashed" in (st.last_failure or "")
+    assert "command too long" in (st.last_failure or "")
+    events = [e["event"] for e in store.events_tail("t1")]
+    assert "task_error" in events
