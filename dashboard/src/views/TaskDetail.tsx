@@ -1188,6 +1188,7 @@ function Sidebar({ detail, ctxOverride }: { detail: TaskDetail; ctxOverride: Tas
           <span>→</span>
           <span style={{ color: "var(--tx3)" }}>{task.branch}</span>
         </div>
+        {task.worktree && <Reclaim task={task} />}
       </div>
     </div>
   );
@@ -1260,7 +1261,6 @@ function ScopingSidebar({ detail }: { detail: TaskDetail }) {
           >
             {task.worktree}
           </div>
-          <Reclaim task={task} />
         </div>
       )}
     </div>
